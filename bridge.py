@@ -8,24 +8,31 @@ and streams them to the browser. The page can switch between scenes.
     python bridge.py --live               # add the live camera to the scenes
 
 Protocol (ws://localhost:8765):
-  1. On connect, and again after each scene switch or depth settings change, one JSON
-     text message with the image and depth sizes, intrinsics, the list of scenes, the
-     current scene and the depth settings.
-  2. Then one binary message per frame:
-       [depth: depthWidth*depthHeight uint16 little-endian, millimeters, 0 = invalid]
-       [color: JPEG bytes, until end of message]
+  1. On connect, and again after each scene switch, depth settings change or background
+     capture, one JSON text message with the image and depth sizes, intrinsics, the list
+     of scenes, the current scene, the depth settings and the background's description.
+  2. Binary messages, each starting with a 2-byte header [kind, 0]:
+       kind 0, a frame (one per frame):
+         [depth: depthWidth*depthHeight uint16 little-endian, millimeters,
+                 0 = unknown, 65535 = too far (beyond the ZED's range)]
+         [color: JPEG bytes, until end of message]
+       kind 1, the scene's background, same layout, with the size given by the info's
+         "background". Sent on connect, after a scene switch and after a capture.
   Browser -> bridge:
      {"type": "control", "playing": bool, "speed": float}
        (speed only applies to SVO sources; a live camera runs at its own rate)
      {"type": "scene", "name": str}
      {"type": "depth", "settings": {...}}   any subset of DEPTH_SETTINGS
+     {"type": "capture", "seconds": float}  capture the background from the next frames
 """
 
 import asyncio
 import glob
 import json
+import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -52,13 +59,100 @@ REOPEN_SETTINGS = {"mode", "stabilization"}
 DEPTH_MODES = ["NEURAL_LIGHT", "NEURAL", "NEURAL_PLUS"]  # fastest to sharpest
 DEPTH_RESOLUTIONS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 
+# Binary message kinds (the first byte of the 2-byte header).
+FRAME, BACKGROUND = 0, 1
+# Depth beyond the ZED's range (+inf from the SDK), sent as the largest uint16: "nothing within
+# range here" never occludes, unlike an unknown pixel (0). The page reads it as 65.535 m.
+TOO_FAR_MM = 65535
 
-def encode_frame(bgr, depth_m):
-    """bgr: HxWx3 uint8, depth_m: float32 meters (NaN/inf = invalid)."""
-    mm = np.nan_to_num(depth_m, nan=0.0, posinf=0.0, neginf=0.0) * 1000.0
-    mm = np.clip(mm, 0, 65535).astype("<u2")
+# Background capture: the median of up to this many frames, spread over the capture.
+# A pixel needs valid depth in this share of them, or its background depth is unknown (0).
+MAX_BACKGROUND_FRAMES = 50
+MIN_VALID_SHARE = 0.25
+BACKGROUND_DIR = Path(__file__).parent / "backgrounds"
+
+
+def encode_frame(kind, bgr, depth_m):
+    """kind: FRAME or BACKGROUND, bgr: HxWx3 uint8, depth_m: float32 meters
+    (+inf = too far, NaN/-inf/0 = unknown)."""
+    mm = np.nan_to_num(depth_m, nan=0.0, posinf=TOO_FAR_MM / 1000, neginf=0.0) * 1000.0
+    mm = np.clip(mm, 0, TOO_FAR_MM).astype("<u2")
     ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    return mm.tobytes() + jpeg.tobytes()
+    # 2 bytes keep the depth aligned for a Uint16Array on the page.
+    return bytes([kind, 0]) + mm.tobytes() + jpeg.tobytes()
+
+
+class Capture:
+    """The frames kept over `seconds` of streaming, to compute a background from."""
+
+    def __init__(self, seconds, fps):
+        self.end = time.perf_counter() + seconds
+        # Keep every `stride`-th frame, so the frames kept span the whole capture.
+        self.stride = max(1, round(seconds * (fps or 30) / MAX_BACKGROUND_FRAMES))
+        self.count = 0
+        self.images, self.depths = [], []
+
+    def add(self, bgr, depth_m):
+        if self.count % self.stride == 0:
+            self.images.append(bgr.copy())  # grab() returns views into buffers it reuses
+            self.depths.append(depth_m.copy())
+        self.count += 1
+
+    def done(self):
+        return time.perf_counter() >= self.end or len(self.depths) >= MAX_BACKGROUND_FRAMES
+
+
+class Background:
+    """A scene's empty set: the per-pixel median of a capture's depth and color.
+    Saved in backgrounds/, and loaded again when the scene opens."""
+
+    def __init__(self, bgr, depth_m, captured_at, frames):
+        self.bgr, self.depth_m, self.captured_at, self.frames = bgr, depth_m, captured_at, frames
+
+    @classmethod
+    def from_capture(cls, capture):
+        # "Too far" is a valid value here: a pixel beyond range most of the time has a far background.
+        depths = np.stack(capture.depths)
+        depths[np.isposinf(depths)] = TOO_FAR_MM / 1000
+        valid = np.isfinite(depths) & (depths > 0)
+        # Median of the valid values only: unknown ones sort last, as +inf.
+        depths = np.where(valid, depths, np.inf)
+        depths.sort(axis=0)
+        count = valid.sum(axis=0)
+        middle = np.maximum((count - 1) // 2, 0)
+        depth_m = np.take_along_axis(depths, middle[None], axis=0)[0]
+        depth_m[count < len(capture.depths) * MIN_VALID_SHARE] = 0  # too rarely seen: unknown
+        images = np.stack(capture.images)
+        half = len(images) // 2
+        bgr = np.partition(images, half, axis=0)[half]
+        captured_at = datetime.now().isoformat(timespec="seconds")
+        return cls(bgr, depth_m.astype(np.float32), captured_at, len(images))
+
+    @staticmethod
+    def path(scene):
+        return BACKGROUND_DIR / (re.sub(r"[^\w.-]", "_", scene) + ".npz")
+
+    @classmethod
+    def load(cls, scene):
+        path = cls.path(scene)
+        if not path.exists():
+            return None
+        data = np.load(path)
+        return cls(data["bgr"], data["depth_m"], str(data["captured_at"]), int(data["frames"]))
+
+    def save(self, scene):
+        BACKGROUND_DIR.mkdir(exist_ok=True)
+        np.savez_compressed(
+            self.path(scene), bgr=self.bgr, depth_m=self.depth_m,
+            captured_at=self.captured_at, frames=self.frames,
+        )
+
+    def info(self):
+        height, width = self.depth_m.shape
+        return dict(depthWidth=width, depthHeight=height, capturedAt=self.captured_at, frames=self.frames)
+
+    def message(self):
+        return encode_frame(BACKGROUND, self.bgr, self.depth_m)
 
 
 def update_depth_settings(settings, changes):
@@ -133,6 +227,7 @@ class ZedSource:
         return self.grab()
 
     def grab(self):
+        """(bgr, depth_m) of the next frame, or None. Both are views into buffers the next grab reuses."""
         sl = self.sl
         err = self.cam.grab(self.runtime)
         if err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
@@ -143,7 +238,7 @@ class ZedSource:
         self.cam.retrieve_image(self.image, sl.VIEW.LEFT, sl.MEM.CPU, sl.Resolution(IMG_W, IMG_H))
         self.cam.retrieve_measure(self.depth, sl.MEASURE.DEPTH, sl.MEM.CPU, sl.Resolution(*self.depth_size))
         bgr = self.image.get_data()[:, :, :3]  # BGRA -> BGR
-        return encode_frame(bgr, self.depth.get_data())
+        return bgr, self.depth.get_data()
 
     def close(self):
         self.cam.close()
@@ -168,12 +263,15 @@ async def main():
     scene = next(iter(scenes))
     depth_settings = dict(DEPTH_SETTINGS)
     source = scenes[scene](depth_settings)
+    background = Background.load(scene)
+    capture = None
 
     def make_info():
         depth_w, depth_h = source.depth_size
         return json.dumps(dict(
             width=IMG_W, height=IMG_H, depthWidth=depth_w, depthHeight=depth_h, **source.intrinsics,
             scenes=list(scenes), scene=scene, depth=depth_settings,
+            background=background.info() if background else None,
         ))
 
     info = make_info()
@@ -182,12 +280,15 @@ async def main():
     # Changes asked by the page, applied between frames by the main loop.
     requested_scene = None
     requested_depth = None
+    requested_capture = None  # seconds
 
     async def handler(ws):
-        nonlocal requested_scene, requested_depth
+        nonlocal requested_scene, requested_depth, requested_capture
         clients.add(ws)
         try:
             await ws.send(info)
+            if background:
+                await ws.send(background.message())
             async for message in ws:
                 msg = json.loads(message)
                 if msg.get("type") == "control":
@@ -199,15 +300,25 @@ async def main():
                     requested_depth = update_depth_settings(
                         requested_depth or depth_settings, msg.get("settings", {})
                     )
+                elif msg.get("type") == "capture":
+                    requested_capture = min(max(float(msg.get("seconds", 5)), 0.5), 30)
         finally:
             clients.discard(ws)
 
     def send_frame(frame):
         if frame:
+            message = encode_frame(FRAME, *frame)
             # Skip pages that haven't taken the previous frame yet (e.g. a hidden tab):
             # queuing frames for them slows the bridge down for everyone.
-            ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(frame)]
-            websockets.broadcast(ready, frame)
+            ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(message)]
+            websockets.broadcast(ready, message)
+
+    def send_info():
+        nonlocal info
+        info = make_info()
+        websockets.broadcast(clients, info)
+        if background:
+            websockets.broadcast(clients, background.message())
 
     # No per-message compression: it's on by default, and deflating every frame cost about
     # 25 ms on this thread, for data that barely compresses (JPEG, noisy depth).
@@ -221,6 +332,9 @@ async def main():
                 settings = requested_depth or depth_settings
                 requested_scene = requested_depth = None
                 reopen = name != scene or any(settings[k] != depth_settings[k] for k in REOPEN_SETTINGS)
+                if capture:
+                    print("Background capture cancelled: the scene or depth settings changed.")
+                    capture = None
                 if reopen:
                     print(f"Opening {name} ({settings['mode']}, stabilization {settings['stabilization']})...")
                     # Same scene: come back to the same frame, to compare settings.
@@ -232,24 +346,38 @@ async def main():
                         print(e)
                         source = scenes[scene](depth_settings)  # fall back to what we had
                     source.seek(position)
+                    background = Background.load(scene)
                 else:
                     source.set_depth_settings(settings)
                     depth_settings = settings
                 # New intrinsics or depth size: the page re-aligns its camera and resizes its textures.
-                info = make_info()
-                websockets.broadcast(clients, info)
+                send_info()
                 send_frame(source.regrab())  # show the change right away, even when paused
                 next_frame = time.perf_counter()
                 await asyncio.sleep(0)
 
-            if not playback["playing"]:
+            if requested_capture is not None:
+                print(f"Capturing the background over {requested_capture:g} s...")
+                capture, requested_capture = Capture(requested_capture, source.fps), None
+
+            # A capture needs frames, so it plays even when paused.
+            if not playback["playing"] and not capture:
                 await asyncio.sleep(0.05)
                 next_frame = time.perf_counter()
                 continue
             start = time.perf_counter()
             # Grabbing on the event-loop thread is deliberate: from a worker thread,
             # pyzed ran about 40% slower here. Messages are handled between frames.
-            send_frame(source.grab())
+            frame = source.grab()
+            send_frame(frame)
+            if capture and frame:
+                capture.add(*frame)
+                if capture.done():
+                    background = Background.from_capture(capture)
+                    background.save(scene)
+                    capture = None
+                    print(f"Background captured ({background.frames} frames), saved to {Background.path(scene)}")
+                    send_info()
             await asyncio.sleep(0)  # let the event loop send frames and read messages
 
             frames += 1

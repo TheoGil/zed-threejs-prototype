@@ -19,7 +19,10 @@ ZED / .svo ──► bridge.py (pyzed) ──ws://localhost:8765──► web/ (
   - `Feed.ts`: the latest frame as textures (video, and depth in meters), plus `sampleDepth()`.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Occlusion.ts`: `apply(material)` adds the depth test to any built-in material.
-  - `DepthView.ts`: the *Depth only* colormap view.
+  - `Ground.ts`: the active recording's ground plane, for the ground test in `Occlusion` and the *Ground* view.
+  - `Background.ts`: the captured background, its controls, and `occluderDepth()`, the shader function that picks,
+    per pixel, the live or the background depth for `Occlusion` and the debug views.
+  - `DepthView.ts`: the *Depth only*, *Ground* and *Foreground* debug views.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
   - `Plane.ts`: one plane, with its mesh, its gizmo and its controls.
   - `PlaneTool.ts`: placing planes with 4 clicks, and the keyboard shortcuts.
@@ -78,9 +81,21 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
 
 ## Controls
 
+- **occlusion**, **bias (m)**: a virtual fragment is hidden where the real world is closer than it, by more than the bias.
+- **ground test**, **ground margin (m)**: a real point less than the margin (default 15 cm) above the recording's
+  ground plane never hides anything. Noise in the road's depth can then no longer hide a plane lying on the road.
+  This only affects virtual content near the ground. The trade-off: the bottom of shoes and wheels, within the margin,
+  no longer hides a plane on the ground. Turn the test off to compare.
 - **Video**: scene (switches the recording; takes a second or two, and the camera re-aligns to that recording's calibration),
   play/pause, playback speed (SVO only: the bridge paces playback, and a live camera runs at its own rate),
-  and the view: *Composite* (the final render) or *Depth only* (a depth colormap: red is near, blue is far, black has no depth).
+  and the view, one of:
+  - *Composite*: the final render.
+  - *Depth only*: the depth occlusion uses (with a background, see below), as a colormap: red is near, blue is far,
+    dark purple is beyond the ZED's range (about 20 m), black is unknown.
+  - *Ground*: the video, tinted green where the real world is within the ground margin and never occludes, darkened
+    where there's no depth. Use it to tune the margin: the road should be green, people and objects not.
+  - *Foreground*: the video, tinted red where something stands in front of the background (the live depth is used there).
+    Use it to tune the background's margins and color test: people should be red, the empty set not.
 - **ZED depth**: the ZED SDK settings the bridge computes depth with. Each change applies when you release the control,
   and the bridge shows the same frame again with it, so you can compare settings while paused.
   The defaults are at the top of `bridge.py` (`DEPTH_SETTINGS`); the bridge keeps changes until it restarts.
@@ -92,6 +107,20 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
   - **fill holes**: gives every pixel a depth (no black in *Depth only*), with guessed values in the holes.
   - **drop saturated**: removes pixels in over-exposed areas.
   - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
+- **Background**: the empty set, captured from the camera, which replaces the noisy live depth wherever nothing stands in front of it.
+  - **Capture background** records the next **capture (s)** seconds (it plays even when paused) and takes the
+    per-pixel median of their depth and color, so people passing through drop out. Ideally the scene is empty; with a
+    recording, pick a quiet moment. The bridge saves it in `backgrounds/<scene>.npz` and loads it again when that scene opens,
+    so it survives restarts. Recapture after the camera moves. **captured** shows when the current one was taken.
+  - Per pixel, occlusion uses the live depth where it is clearly closer than the background (someone in front) or
+    clearly farther (something in the background has left, like a car that drove off). Everywhere else, and where the
+    live depth is unknown, it uses the background's: no noise, no flicker, no holes on the static set.
+  - **fg margin (m)** and **fg margin (%)**: how much closer or farther than the background counts as "clearly": the larger
+    of the two, the percentage being of the background's distance (stereo noise grows with distance).
+  - **color test**: also requires the live color to differ from the background's (another hue, brighter, or much darker
+    than a shadow). This removes the halo of background pixels that got a foreground object's depth, and the false
+    foreground on noisy edges. **color tolerance** sets how different.
+  - **use background** turns it all off, to compare.
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
   here; only the current recording's scene is rendered and only its folder is shown.
   Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
@@ -103,6 +132,8 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
   - **mode**: *Move* (`W`) slides it along its own axes. *Rotate* (`E`) turns it with the rings, or freely
     (trackball style) by dragging inside the rings, away from any of them.
   - **Reset position** puts it back where it was fitted.
+  - **ground** makes this plane the recording's ground, for the ground test (at most one per recording). It is saved as
+    `"ground": true`. The ground follows the plane live, so you can fine-tune it with the gizmo while watching the *Ground* view.
 
 The bridge prints the fps it actually sends every 5 s. At 1× it should match the recording's frame rate (15 fps for the runners SVO).
 

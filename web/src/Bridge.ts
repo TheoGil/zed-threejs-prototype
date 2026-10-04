@@ -7,7 +7,8 @@ import type { DepthSettings } from "./ZedSettings";
 const WS_URL =
   new URLSearchParams(location.search).get("ws") ?? "ws://localhost:8765";
 
-// Sent by the bridge on connect and after each scene switch or depth settings change (see bridge.py).
+// Sent by the bridge on connect and after each scene switch, depth settings change or
+// background capture (see bridge.py).
 export interface StreamInfo {
   width: number; // color image size, in pixels
   height: number;
@@ -20,6 +21,14 @@ export interface StreamInfo {
   scenes: string[]; // every scene the bridge can play
   scene: string; // the one playing
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
+  background: BackgroundInfo | null; // the scene's captured background, if any
+}
+
+export interface BackgroundInfo {
+  depthWidth: number; // its depth map size, in pixels
+  depthHeight: number;
+  capturedAt: string; // local time, ISO 8601
+  frames: number; // how many frames its median was taken over
 }
 
 export interface Frame {
@@ -30,10 +39,16 @@ export interface Frame {
 interface Handlers {
   onInfo: (info: StreamInfo) => void;
   onFrame: (frame: Frame) => void;
+  onBackground: (background: Frame) => void; // sent after an info whose `background` describes it
 }
 
-// The connection to bridge.py. Receives the stream info and the frames, and sends
-// play/pause, speed and scene switches. Playback is driven by the bridge; the page
+// Binary message kinds: the first byte of their 2-byte header.
+const FRAME = 0;
+const BACKGROUND = 1;
+const HEADER_BYTES = 2;
+
+// The connection to bridge.py. Receives the stream info, the frames and the background,
+// and sends play/pause, speed, scene switches and the other modules' requests. Playback is driven by the bridge; the page
 // only tells it what it wants.
 export class Bridge {
   info: StreamInfo | null = null;
@@ -41,7 +56,7 @@ export class Bridge {
   private socket: WebSocket | null = null;
   private decoding = false;
   private frames = 0; // frames shown since the last status update
-  private loading: string | null = null; // what the bridge is opening, until its next info
+  private waiting: string | null = null; // status shown until the bridge's next info
   private readonly ui: FolderApi | null;
   private sceneBinding: BladeApi | null = null;
   private sceneList = "";
@@ -70,7 +85,7 @@ export class Bridge {
 
   requestScene(name: string) {
     if (name === this.info?.scene) return;
-    if (this.send({ type: "scene", name })) this.setLoading(name);
+    if (this.send({ type: "scene", name })) this.waitForInfo(`loading ${name}…`);
   }
 
   // Sends a message to the bridge; false if it isn't connected.
@@ -80,10 +95,10 @@ export class Bridge {
     return true;
   }
 
-  // Shows "loading <what>…" until the bridge sends its next info.
-  setLoading(what: string) {
-    this.loading = what;
-    this.status.set(`loading ${what}…`);
+  // Shows `status` until the bridge sends its next info, which ends whatever it was doing.
+  waitForInfo(status: string) {
+    this.waiting = status;
+    this.status.set(status);
   }
 
   private connect() {
@@ -96,7 +111,7 @@ export class Bridge {
     };
     socket.onmessage = (e) => {
       if (typeof e.data === "string") this.onInfo(JSON.parse(e.data));
-      else if (this.info) this.onFrame(e.data);
+      else if (this.info) this.onBinary(e.data);
     };
     socket.onclose = () => {
       this.status.set(`waiting for bridge on ${WS_URL}…`);
@@ -111,7 +126,7 @@ export class Bridge {
 
   private onInfo(info: StreamInfo) {
     this.info = info;
-    this.loading = null;
+    this.waiting = null;
     this.updateSceneDropdown(info);
     this.handlers.onInfo(info);
   }
@@ -136,36 +151,46 @@ export class Bridge {
       .on("change", (e) => this.requestScene(e.value));
   }
 
-  private onFrame(buffer: ArrayBuffer) {
-    if (this.decoding) return; // drop frames rather than queue them up
-    this.decoding = true;
-
-    const { depthWidth, depthHeight } = this.info!;
-    const depthCount = depthWidth * depthHeight;
-    const depthMm = new Uint16Array(buffer, 0, depthCount);
-    const jpeg = new Blob([new Uint8Array(buffer, depthCount * 2)], {
-      type: "image/jpeg",
-    });
-
-    const image = new Image();
-    const url = URL.createObjectURL(jpeg);
-    image.onload = () => {
-      this.handlers.onFrame({ image, depthMm });
-      URL.revokeObjectURL(url);
+  private async onBinary(buffer: ArrayBuffer) {
+    const kind = new Uint8Array(buffer, 0, 1)[0];
+    const info = this.info!;
+    if (kind === BACKGROUND && info.background) {
+      const { depthWidth, depthHeight } = info.background;
+      const background = await decode(buffer, depthWidth, depthHeight);
+      if (background) this.handlers.onBackground(background);
+    } else if (kind === FRAME) {
+      if (this.decoding) return; // drop frames rather than queue them up
+      this.decoding = true;
+      const frame = await decode(buffer, info.depthWidth, info.depthHeight);
       this.decoding = false;
+      if (!frame) return;
+      this.handlers.onFrame(frame);
       this.frames++;
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      this.decoding = false;
-    };
-    image.src = url;
+    }
   }
 
   private updateStatus() {
-    if (this.loading) this.status.set(`loading ${this.loading}…`);
+    if (this.waiting) this.status.set(this.waiting);
     else if (this.info)
       this.status.set(this.playback.playing ? `${this.frames} fps` : "paused");
     this.frames = 0;
+  }
+}
+
+// A frame or background message: [header][depth: uint16 mm][color: JPEG]. null if the JPEG is broken.
+async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
+  const depthCount = depthWidth * depthHeight;
+  const depthMm = new Uint16Array(buffer, HEADER_BYTES, depthCount);
+  const jpeg = new Blob([new Uint8Array(buffer, HEADER_BYTES + depthCount * 2)], { type: "image/jpeg" });
+  const url = URL.createObjectURL(jpeg);
+  const image = new Image();
+  image.src = url;
+  try {
+    await image.decode();
+    return { image, depthMm };
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }

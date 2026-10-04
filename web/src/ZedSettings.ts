@@ -48,7 +48,7 @@ export class ZedSettings {
     if (!last) return; // mid-drag
     if (value === this.applied?.[key]) return; // the controls following the bridge, not a change
     const sent = this.bridge.send({ type: "depth", settings: { [key]: value } });
-    if (sent && REOPEN.includes(key)) this.bridge.setLoading("depth settings");
+    if (sent && REOPEN.includes(key)) this.bridge.waitForInfo("loading depth settings…");
   }
 
   private addControls(ui: FolderApi, settings: DepthSettings) {

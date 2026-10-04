@@ -1,8 +1,10 @@
 import * as THREE from "three";
+import { Background } from "./Background";
 import { Bridge, type StreamInfo } from "./Bridge";
 import { Debug } from "./Debug";
 import { DepthView } from "./DepthView";
 import { Feed } from "./Feed";
+import { Ground } from "./Ground";
 import { Occlusion } from "./Occlusion";
 import { PlaneTool } from "./PlaneTool";
 import { Recordings, type DefaultPlanes } from "./Recordings";
@@ -18,6 +20,8 @@ export class App {
   private readonly debug = new Debug();
   private readonly status = new Status();
   private readonly feed = new Feed();
+  private readonly ground = new Ground();
+  private readonly background = new Background(this.feed);
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
   private readonly zedSettings: ZedSettings;
@@ -31,14 +35,19 @@ export class App {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(canvas);
 
-    this.occlusion = new Occlusion(this.feed, this.debug);
+    this.occlusion = new Occlusion(this.background, this.ground, this.debug);
     this.bridge = new Bridge(
-      { onInfo: (info) => this.onInfo(info), onFrame: (frame) => this.feed.update(frame) },
+      {
+        onInfo: (info) => this.onInfo(info),
+        onFrame: (frame) => this.feed.update(frame),
+        onBackground: (frame) => this.background.set(frame, this.bridge.info!.background!),
+      },
       this.status,
       this.debug,
     );
-    this.depthView = new DepthView(this.feed, this.debug);
+    this.depthView = new DepthView(this.background, this.camera, this.ground, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
+    this.background.addControls(this.debug, this.bridge);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -52,13 +61,14 @@ export class App {
     this.renderer.setAnimationLoop(() => this.render());
   }
 
-  // On connect and after each scene switch or depth settings change: the intrinsics
-  // or the depth size may have changed, so the camera re-aligns and the textures resize.
+  // On connect and after each scene switch, depth settings change or background capture:
+  // the intrinsics or the depth size may have changed, so the camera re-aligns and the textures resize.
   private onInfo(info: StreamInfo) {
     this.camera.setIntrinsics(info);
     this.feed.setDepthSize(info.depthWidth, info.depthHeight);
     this.resize();
     this.zedSettings.sync(info.depth);
+    this.background.sync(info.background);
     this.planeTool.setRecording(this.recordings.activate(info.scene));
   }
 
@@ -73,6 +83,7 @@ export class App {
 
   private render() {
     this.debug.begin();
+    this.ground.update(this.recordings.active?.groundPlane);
     if (this.depthView.active) this.depthView.render(this.renderer);
     else this.renderer.render(this.recordings.scene, this.camera);
     this.debug.end();

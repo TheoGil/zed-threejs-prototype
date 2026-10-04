@@ -24,3 +24,6 @@ wheels/
 Thumbs.db
 desktop.ini
 .idea/
+
+# Captured backgrounds: per camera setup, captured from the page
+backgrounds/

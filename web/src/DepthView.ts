@@ -1,30 +1,51 @@
 import * as THREE from "three";
+import { OCCLUDER_DEPTH_GLSL, type Background } from "./Background";
 import type { Debug } from "./Debug";
-import type { Feed } from "./Feed";
+import type { Ground } from "./Ground";
+import type { ZedCamera } from "./ZedCamera";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-// The "Depth only" view: the depth map as a full-screen colormap
-// (red is near, blue is far, black has no depth).
+type View = "composite" | "depth" | "ground" | "foreground";
+const VIEW_INDEX = { depth: 0, ground: 1, foreground: 2 };
+
+// Full-screen debug views of the real-world depth, instead of the composite. All show
+// the depth occlusion uses (see Background.ts: the background's where nothing stands in front).
+// - "Depth only": that depth as a colormap (red is near, blue is far, black has no depth).
+// - "Ground": the video, tinted green where the real point is within the ground margin
+//   (it never occludes), darkened where there's no depth.
+// - "Foreground": the video, tinted red where something stands in front of the background
+//   (the live depth is used there), darkened where there's no depth.
 export class DepthView {
-  readonly params = { view: "composite" as "composite" | "depth" };
+  readonly params = { view: "composite" as View };
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private readonly uView = { value: 0 };
 
-  constructor(feed: Feed, debug: Debug) {
+  constructor(background: Background, zedCamera: ZedCamera, ground: Ground, debug: Debug) {
     const quad = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
       new THREE.ShaderMaterial({
         uniforms: {
-          uRealDepth: feed.depth,
+          ...background.uniforms,
+          ...ground.uniforms,
+          uView: this.uView,
           uMax: { value: DEPTH_VIEW_MAX },
+          // The same object setIntrinsics() updates, so this follows the calibration.
+          uProjectionInverse: { value: zedCamera.projectionMatrixInverse },
         },
         vertexShader: `
           varying vec2 vUv;
           void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
-        fragmentShader: `
-          uniform sampler2D uRealDepth;
+        fragmentShader:
+          OCCLUDER_DEPTH_GLSL +
+          `
+          uniform int uView; // VIEW_INDEX
           uniform float uMax;
+          uniform mat4 uProjectionInverse;
+          uniform vec4 uGround;
+          uniform float uGroundMargin;
+          uniform bool uGroundOn;
           varying vec2 vUv;
           // Polynomial approximation of the Turbo colormap (near = red, far = blue).
           vec3 turbo(float x) {
@@ -39,8 +60,26 @@ export class DepthView {
             return vec3(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2));
           }
           void main() {
-            float d = texture2D(uRealDepth, vec2(vUv.x, 1.0 - vUv.y)).r;
-            gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+            float d = occluderDepth(vUv);
+            if (uView == 0) {
+              gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+              return;
+            }
+            vec3 color = texture2D(uVideo, vUv).rgb; // linear: the texture is sRGB
+            if (d <= 0.0) {
+              color *= 0.2;
+            } else if (uView == 1 && uGroundOn) {
+              // The real point at this pixel: along its camera ray, d meters away.
+              vec4 p = uProjectionInverse * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
+              vec3 ray = p.xyz / p.w;
+              vec3 point = ray * (d / -ray.z);
+              if (dot(uGround.xyz, point) + uGround.w < uGroundMargin) color = mix(color, vec3(0.0, 1.0, 0.0), 0.5);
+            } else if (uView == 2 && uBgOn) {
+              float live = texture2D(uRealDepth, vec2(vUv.x, 1.0 - vUv.y)).r;
+              float bg = texture2D(uBgDepth, vec2(vUv.x, 1.0 - vUv.y)).r;
+              if (live > 0.0 && bg > 0.0 && isForeground(live, bg, vUv)) color = mix(color, vec3(1.0, 0.0, 0.0), 0.5);
+            }
+            gl_FragColor = linearToOutputTexel(vec4(color, 1.0));
           }`,
       }),
     );
@@ -48,15 +87,16 @@ export class DepthView {
     this.scene.add(quad);
 
     debug.folder("Video")?.addBinding(this.params, "view", {
-      options: { Composite: "composite", "Depth only": "depth" },
+      options: { Composite: "composite", "Depth only": "depth", Ground: "ground", Foreground: "foreground" },
     });
   }
 
   get active() {
-    return this.params.view === "depth";
+    return this.params.view !== "composite";
   }
 
   render(renderer: THREE.WebGLRenderer) {
+    if (this.params.view !== "composite") this.uView.value = VIEW_INDEX[this.params.view];
     renderer.render(this.scene, this.camera);
   }
 }

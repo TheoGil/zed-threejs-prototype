@@ -1,11 +1,15 @@
 import * as THREE from "three";
 import type { Frame } from "./Bridge";
 
+// Depth beyond the ZED's range arrives as 65535 mm (see bridge.py): about 65 m,
+// past the camera's far plane, so it never occludes.
+const TOO_FAR = 65;
+
 // The latest frame from the bridge, as textures: the color video and the real-world depth.
 export class Feed {
   readonly video = new THREE.Texture();
-  // Depth in meters, 0 = unknown. Shared as a uniform, so the materials that use it
-  // follow when the texture is replaced for a new size.
+  // Depth in meters, 0 = unknown, 65.535 = too far. Shared as a uniform, so the materials
+  // that use it follow when the texture is replaced for a new size.
   readonly depth: { value: THREE.DataTexture | null } = { value: null };
   private depthData = new Float32Array(0);
   private depthWidth = 0;
@@ -53,7 +57,7 @@ export class Feed {
       for (let x = px - radius; x <= px + radius; x++) {
         if (x < 0 || y < 0 || x >= w || y >= h) continue;
         const d = this.depthData[y * w + x];
-        if (d > 0) values.push(d);
+        if (d > 0 && d < TOO_FAR) values.push(d);
       }
     }
     if (!values.length) return 0;
