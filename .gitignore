@@ -1,0 +1,26 @@
+# Node / Vite
+node_modules/
+dist/
+*.tsbuildinfo
+yarn-error.log
+.vite/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+wheels/
+*.whl
+
+# ZED recordings: hundreds of MB each, too big for git (GitHub rejects files over 100 MB)
+*.svo
+*.svo2
+
+# Claude Code: per-user local settings
+.claude/settings.local.json
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/

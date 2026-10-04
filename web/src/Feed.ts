@@ -1,0 +1,61 @@
+import * as THREE from "three";
+import type { Frame } from "./Bridge";
+
+// The latest frame from the bridge, as textures: the color video and the real-world depth.
+export class Feed {
+  readonly video = new THREE.Texture();
+  // Depth in meters, 0 = unknown. Shared as a uniform, so the materials that use it
+  // follow when the texture is replaced for a new size.
+  readonly depth: { value: THREE.DataTexture | null } = { value: null };
+  private depthData = new Float32Array(0);
+  private depthWidth = 0;
+  private depthHeight = 0;
+
+  constructor() {
+    this.video.colorSpace = THREE.SRGBColorSpace;
+  }
+
+  setDepthSize(width: number, height: number) {
+    this.depthWidth = width;
+    this.depthHeight = height;
+    this.depthData = new Float32Array(width * height);
+    this.depth.value?.dispose();
+    const texture = new THREE.DataTexture(
+      this.depthData,
+      width,
+      height,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    texture.minFilter = texture.magFilter = THREE.NearestFilter;
+    this.depth.value = texture;
+  }
+
+  // Updates color and depth together so they stay in sync.
+  update({ image, depthMm }: Frame) {
+    this.video.image = image;
+    this.video.needsUpdate = true;
+    const depth = this.depthData;
+    for (let i = 0; i < depth.length; i++) depth[i] = depthMm[i] * 0.001;
+    this.depth.value!.needsUpdate = true;
+  }
+
+  // Median of the valid depths around (u, v), in meters, 0 if none. u, v are 0..1 from the top-left.
+  sampleDepth(u: number, v: number, radius = 3): number {
+    const w = this.depthWidth;
+    const h = this.depthHeight;
+    const px = Math.floor(u * w);
+    const py = Math.floor(v * h);
+    const values: number[] = [];
+    for (let y = py - radius; y <= py + radius; y++) {
+      for (let x = px - radius; x <= px + radius; x++) {
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        const d = this.depthData[y * w + x];
+        if (d > 0) values.push(d);
+      }
+    }
+    if (!values.length) return 0;
+    values.sort((a, b) => a - b);
+    return values[values.length >> 1];
+  }
+}
