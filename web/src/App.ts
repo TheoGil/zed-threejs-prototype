@@ -8,6 +8,7 @@ import { PlaneTool } from "./PlaneTool";
 import { Recordings, type DefaultPlanes } from "./Recordings";
 import { Status } from "./Status";
 import { ZedCamera } from "./ZedCamera";
+import { ZedSettings } from "./ZedSettings";
 
 // Owns the renderer and every module, wires them together, and runs the render loop:
 // the ZED video as the background, with occludable 3D content on top.
@@ -19,6 +20,7 @@ export class App {
   private readonly feed = new Feed();
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
+  private readonly zedSettings: ZedSettings;
   private readonly depthView: DepthView;
   private readonly planeTool: PlaneTool;
   private readonly recordings: Recordings;
@@ -36,6 +38,7 @@ export class App {
       this.debug,
     );
     this.depthView = new DepthView(this.feed, this.debug);
+    this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -49,11 +52,13 @@ export class App {
     this.renderer.setAnimationLoop(() => this.render());
   }
 
-  // On connect and after each scene switch: new intrinsics, so the camera re-aligns.
+  // On connect and after each scene switch or depth settings change: the intrinsics
+  // or the depth size may have changed, so the camera re-aligns and the textures resize.
   private onInfo(info: StreamInfo) {
     this.camera.setIntrinsics(info);
     this.feed.setDepthSize(info.depthWidth, info.depthHeight);
     this.resize();
+    this.zedSettings.sync(info.depth);
     this.planeTool.setRecording(this.recordings.activate(info.scene));
   }
 

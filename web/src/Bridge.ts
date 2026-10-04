@@ -1,12 +1,13 @@
 import type { BladeApi, FolderApi } from "tweakpane";
 import type { Debug } from "./Debug";
 import type { Status } from "./Status";
+import type { DepthSettings } from "./ZedSettings";
 
 // The bridge's address; override with ?ws=ws://host:port in the page URL.
 const WS_URL =
   new URLSearchParams(location.search).get("ws") ?? "ws://localhost:8765";
 
-// Sent by the bridge on connect and after each scene switch (see bridge.py).
+// Sent by the bridge on connect and after each scene switch or depth settings change (see bridge.py).
 export interface StreamInfo {
   width: number; // color image size, in pixels
   height: number;
@@ -18,6 +19,7 @@ export interface StreamInfo {
   cy: number;
   scenes: string[]; // every scene the bridge can play
   scene: string; // the one playing
+  depth: DepthSettings; // the ZED SDK settings the depth is computed with
 }
 
 export interface Frame {
@@ -39,7 +41,7 @@ export class Bridge {
   private socket: WebSocket | null = null;
   private decoding = false;
   private frames = 0; // frames shown since the last status update
-  private loadingScene: string | null = null;
+  private loading: string | null = null; // what the bridge is opening, until its next info
   private readonly ui: FolderApi | null;
   private sceneBinding: BladeApi | null = null;
   private sceneList = "";
@@ -67,10 +69,21 @@ export class Bridge {
   }
 
   requestScene(name: string) {
-    if (name === this.info?.scene || this.socket?.readyState !== WebSocket.OPEN) return;
-    this.socket.send(JSON.stringify({ type: "scene", name }));
-    this.loadingScene = name;
-    this.status.set(`loading ${name}…`);
+    if (name === this.info?.scene) return;
+    if (this.send({ type: "scene", name })) this.setLoading(name);
+  }
+
+  // Sends a message to the bridge; false if it isn't connected.
+  send(message: object): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(message));
+    return true;
+  }
+
+  // Shows "loading <what>…" until the bridge sends its next info.
+  setLoading(what: string) {
+    this.loading = what;
+    this.status.set(`loading ${what}…`);
   }
 
   private connect() {
@@ -92,14 +105,13 @@ export class Bridge {
   }
 
   private sendControl() {
-    if (this.socket?.readyState !== WebSocket.OPEN) return;
     const { playing, speed } = this.playback;
-    this.socket.send(JSON.stringify({ type: "control", playing, speed }));
+    this.send({ type: "control", playing, speed });
   }
 
   private onInfo(info: StreamInfo) {
     this.info = info;
-    this.loadingScene = null;
+    this.loading = null;
     this.updateSceneDropdown(info);
     this.handlers.onInfo(info);
   }
@@ -151,7 +163,7 @@ export class Bridge {
   }
 
   private updateStatus() {
-    if (this.loadingScene) this.status.set(`loading ${this.loadingScene}…`);
+    if (this.loading) this.status.set(`loading ${this.loading}…`);
     else if (this.info)
       this.status.set(this.playback.playing ? `${this.frames} fps` : "paused");
     this.frames = 0;

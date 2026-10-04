@@ -33,6 +33,8 @@ export class Feed {
 
   // Updates color and depth together so they stay in sync.
   update({ image, depthMm }: Frame) {
+    // A frame decoded while the depth size changed belongs to the old size: skip it.
+    if (depthMm.length !== this.depthData.length) return;
     this.video.image = image;
     this.video.needsUpdate = true;
     const depth = this.depthData;

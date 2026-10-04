@@ -11,10 +11,11 @@ ZED / .svo ──► bridge.py (pyzed) ──ws://localhost:8765──► web/ (
 
 ## Files
 
-- `bridge.py`: grabs the left image (1280×720 JPEG) and depth (640×360, uint16 mm). It sends the intrinsics and the list of scenes on connect, and again after each scene switch.
+- `bridge.py`: grabs the left image (1280×720 JPEG) and depth (640×360 or 1280×720, uint16 mm). It sends the intrinsics, the list of scenes and the depth settings on connect, and again after each scene switch or settings change.
 - `web/src/` (TypeScript), one class per feature. `App` creates and wires the others.
   - `App.ts`: the renderer, the render loop, and the canvas size.
   - `Bridge.ts`: the WebSocket to `bridge.py`, the protocol types, and the playback controls (play, speed, scene).
+  - `ZedSettings.ts`: the *ZED depth* controls, which change the bridge's ZED SDK depth settings live.
   - `Feed.ts`: the latest frame as textures (video, and depth in meters), plus `sampleDepth()`.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Occlusion.ts`: `apply(material)` adds the depth test to any built-in material.
@@ -57,8 +58,8 @@ ZED / .svo ──► bridge.py (pyzed) ──ws://localhost:8765──► web/ (
    yarn
    ```
 
-The first run with NEURAL depth downloads the AI model and optimizes it for the GPU,
-which takes a few minutes. Later runs start in seconds.
+The first run with each NEURAL depth mode (NEURAL_LIGHT, NEURAL, NEURAL_PLUS) downloads its AI model
+and optimizes it for the GPU, which takes a few minutes. Later runs start in seconds.
 
 ## Run
 
@@ -80,6 +81,17 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
 - **Video**: scene (switches the recording; takes a second or two, and the camera re-aligns to that recording's calibration),
   play/pause, playback speed (SVO only: the bridge paces playback, and a live camera runs at its own rate),
   and the view: *Composite* (the final render) or *Depth only* (a depth colormap: red is near, blue is far, black has no depth).
+- **ZED depth**: the ZED SDK settings the bridge computes depth with. Each change applies when you release the control,
+  and the bridge shows the same frame again with it, so you can compare settings while paused.
+  The defaults are at the top of `bridge.py` (`DEPTH_SETTINGS`); the bridge keeps changes until it restarts.
+  - **mode**: NEURAL_LIGHT (fastest), NEURAL or NEURAL_PLUS (sharpest edges, slowest).
+  - **stabilization** (0–100): smooths depth over time where the scene is static.
+  - Changing **mode** or **stabilization** reopens the recording, which takes a second or two, at the same frame.
+  - **confidence** (1–100): lower removes more uncertain pixels, mostly along object edges.
+  - **texture conf.** (1–100): lower removes more pixels in plain, textureless areas.
+  - **fill holes**: gives every pixel a depth (no black in *Depth only*), with guessed values in the holes.
+  - **drop saturated**: removes pixels in over-exposed areas.
+  - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
   here; only the current recording's scene is rendered and only its folder is shown.
   Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
