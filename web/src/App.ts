@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Background } from "./Background";
 import { Bridge, type StreamInfo } from "./Bridge";
 import { Debug } from "./Debug";
+import { DepthFilter } from "./DepthFilter";
 import { DepthView } from "./DepthView";
 import { Feed } from "./Feed";
 import { Ground } from "./Ground";
@@ -22,6 +23,7 @@ export class App {
   private readonly feed = new Feed();
   private readonly ground = new Ground();
   private readonly background = new Background(this.feed);
+  private readonly filter = new DepthFilter(this.background);
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
   private readonly zedSettings: ZedSettings;
@@ -35,19 +37,26 @@ export class App {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(canvas);
 
-    this.occlusion = new Occlusion(this.background, this.ground, this.debug);
+    this.occlusion = new Occlusion(this.filter, this.ground, this.debug);
     this.bridge = new Bridge(
       {
         onInfo: (info) => this.onInfo(info),
-        onFrame: (frame) => this.feed.update(frame),
-        onBackground: (frame) => this.background.set(frame, this.bridge.info!.background!),
+        onFrame: (frame) => {
+          this.feed.update(frame);
+          this.filter.onFrame();
+        },
+        onBackground: (frame) => {
+          this.background.set(frame, this.bridge.info!.background!);
+          this.filter.reset();
+        },
       },
       this.status,
       this.debug,
     );
-    this.depthView = new DepthView(this.background, this.camera, this.ground, this.debug);
+    this.depthView = new DepthView(this.filter, this.background, this.camera, this.ground, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.background.addControls(this.debug, this.bridge);
+    this.filter.addControls(this.debug);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -66,6 +75,7 @@ export class App {
   private onInfo(info: StreamInfo) {
     this.camera.setIntrinsics(info);
     this.feed.setDepthSize(info.depthWidth, info.depthHeight);
+    this.filter.setSize(info.depthWidth, info.depthHeight, info.width, info.height);
     this.resize();
     this.zedSettings.sync(info.depth);
     this.background.sync(info.background);
@@ -84,6 +94,7 @@ export class App {
   private render() {
     this.debug.begin();
     this.ground.update(this.recordings.active?.groundPlane);
+    this.filter.render(this.renderer);
     if (this.depthView.active) this.depthView.render(this.renderer);
     else this.renderer.render(this.recordings.scene, this.camera);
     this.debug.end();

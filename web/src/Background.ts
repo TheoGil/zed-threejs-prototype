@@ -3,14 +3,10 @@ import type { BackgroundInfo, Bridge, Frame } from "./Bridge";
 import type { Debug } from "./Debug";
 import type { Feed } from "./Feed";
 
-// GLSL shared by Occlusion and DepthView: the real depth that occludes at a pixel.
-// With a background, a pixel uses the live depth where something stands clearly in front
-// of the background (and, with the color test, looks different from it): people, bikes.
-// It also does where the live depth is clearly farther: what the background saw has left.
-// Everywhere else, the live depth agrees with the background or is unknown, and the
-// background's depth is used: clean, stable, without holes.
-// Needs Background.uniforms (which include the live depth and video).
-export const OCCLUDER_DEPTH_GLSL = /* glsl */ `
+// GLSL for comparing the live depth with the background, used by DepthFilter (which
+// decides, per pixel, which depth occludes) and DepthView. Needs Background.uniforms
+// (which include the live depth and video). Depths in meters, 0 = unknown, about 65 = too far.
+export const BACKGROUND_GLSL = /* glsl */ `
   uniform sampler2D uRealDepth;
   uniform sampler2D uVideo;
   uniform sampler2D uBgDepth;
@@ -45,24 +41,17 @@ export const OCCLUDER_DEPTH_GLSL = /* glsl */ `
     return live < bg - bgMargin(bg) && (!uColorTest || colorDiffers(screenUv));
   }
 
-  // screenUv: 0..1 from the bottom-left, like gl_FragCoord.xy / resolution.
-  // Meters, 0 = unknown, about 65 = too far (beyond the ZED's range).
-  float occluderDepth(vec2 screenUv) {
-    vec2 depthUv = vec2(screenUv.x, 1.0 - screenUv.y); // depth rows are stored top first
-    float live = texture2D(uRealDepth, depthUv).r;
-    if (!uBgOn) return live;
-    float bg = texture2D(uBgDepth, depthUv).r;
-    if (bg <= 0.0) return live; // the background is unknown here
-    if (live <= 0.0) return bg; // the live depth is unknown: the background fills the hole
-    // Farther than the background: what it saw there has left (e.g. a car that drove off).
-    if (live > bg + bgMargin(bg)) return live;
-    return isForeground(live, bg, screenUv) ? live : bg;
+  // Whether the live depth should be used rather than the background's: something stands
+  // in front of it, or the live depth is clearly farther, so what the background saw there
+  // has left (e.g. a car that drove off). Both known (> 0).
+  bool liveDiffers(float live, float bg, vec2 screenUv) {
+    return isForeground(live, bg, screenUv) || live > bg + bgMargin(bg);
   }
 `;
 
 // The scene's background: its empty set, captured by the bridge from a few seconds of
 // frames (the per-pixel median, so people passing through drop out) and saved there.
-// Its depth replaces the live depth wherever nothing stands in front of it.
+// Its depth replaces the live depth wherever nothing stands in front of it (see DepthFilter).
 export class Background {
   readonly uniforms;
   private readonly params = { use: true, seconds: 5, captured: "none" };

@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { OCCLUDER_DEPTH_GLSL, type Background } from "./Background";
+import { BACKGROUND_GLSL, type Background } from "./Background";
 import type { Debug } from "./Debug";
+import type { DepthFilter } from "./DepthFilter";
 import type { Ground } from "./Ground";
 import type { ZedCamera } from "./ZedCamera";
 
@@ -10,25 +11,27 @@ type View = "composite" | "depth" | "ground" | "foreground";
 const VIEW_INDEX = { depth: 0, ground: 1, foreground: 2 };
 
 // Full-screen debug views of the real-world depth, instead of the composite. All show
-// the depth occlusion uses (see Background.ts: the background's where nothing stands in front).
+// the depth occlusion uses: DepthFilter's output.
 // - "Depth only": that depth as a colormap (red is near, blue is far, black has no depth).
 // - "Ground": the video, tinted green where the real point is within the ground margin
 //   (it never occludes), darkened where there's no depth.
-// - "Foreground": the video, tinted red where something stands in front of the background
-//   (the live depth is used there), darkened where there's no depth.
+// - "Foreground": the video, tinted where the live depth is used: red where something stands
+//   in front of the background, blue where the background is stale (the live depth is farther);
+//   yellow where a hole inside the foreground was filled. Darkened where there's no depth.
 export class DepthView {
   readonly params = { view: "composite" as View };
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly uView = { value: 0 };
 
-  constructor(background: Background, zedCamera: ZedCamera, ground: Ground, debug: Debug) {
+  constructor(filter: DepthFilter, background: Background, zedCamera: ZedCamera, ground: Ground, debug: Debug) {
     const quad = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
       new THREE.ShaderMaterial({
         uniforms: {
           ...background.uniforms,
           ...ground.uniforms,
+          uOccluder: filter.output,
           uView: this.uView,
           uMax: { value: DEPTH_VIEW_MAX },
           // The same object setIntrinsics() updates, so this follows the calibration.
@@ -38,8 +41,9 @@ export class DepthView {
           varying vec2 vUv;
           void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
         fragmentShader:
-          OCCLUDER_DEPTH_GLSL +
+          BACKGROUND_GLSL +
           `
+          uniform sampler2D uOccluder;
           uniform int uView; // VIEW_INDEX
           uniform float uMax;
           uniform mat4 uProjectionInverse;
@@ -60,7 +64,8 @@ export class DepthView {
             return vec3(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2));
           }
           void main() {
-            float d = occluderDepth(vUv);
+            vec2 occluder = texture2D(uOccluder, vUv).rg;
+            float d = occluder.r;
             if (uView == 0) {
               gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
               return;
@@ -74,10 +79,12 @@ export class DepthView {
               vec3 ray = p.xyz / p.w;
               vec3 point = ray * (d / -ray.z);
               if (dot(uGround.xyz, point) + uGround.w < uGroundMargin) color = mix(color, vec3(0.0, 1.0, 0.0), 0.5);
-            } else if (uView == 2 && uBgOn) {
-              float live = texture2D(uRealDepth, vec2(vUv.x, 1.0 - vUv.y)).r;
-              float bg = texture2D(uBgDepth, vec2(vUv.x, 1.0 - vUv.y)).r;
-              if (live > 0.0 && bg > 0.0 && isForeground(live, bg, vUv)) color = mix(color, vec3(1.0, 0.0, 0.0), 0.5);
+            } else if (uView == 2) {
+              float bg = uBgOn ? texture2D(uBgDepth, vec2(vUv.x, 1.0 - vUv.y)).r : 0.0;
+              vec3 tint = color;
+              if (occluder.g > 0.25 && occluder.g < 0.75) tint = vec3(1.0, 0.9, 0.0); // filled hole
+              else if (occluder.g > 0.75 && bg > 0.0) tint = d < bg ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.4, 1.0);
+              color = mix(color, tint, 0.5);
             }
             gl_FragColor = linearToOutputTexel(vec4(color, 1.0));
           }`,

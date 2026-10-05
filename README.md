@@ -20,8 +20,10 @@ ZED / .svo ──► bridge.py (pyzed) ──ws://localhost:8765──► web/ (
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Occlusion.ts`: `apply(material)` adds the depth test to any built-in material.
   - `Ground.ts`: the active recording's ground plane, for the ground test in `Occlusion` and the *Ground* view.
-  - `Background.ts`: the captured background, its controls, and `occluderDepth()`, the shader function that picks,
-    per pixel, the live or the background depth for `Occlusion` and the debug views.
+  - `Background.ts`: the captured background, its controls, and the shader functions that compare the live depth with it.
+  - `DepthFilter.ts`: a GPU pass that picks, per pixel, the live or the background depth, and filters that choice
+    over time and in space, then upsamples it to the video's resolution, snapping its edges to the video's. Its output
+    texture is the depth `Occlusion` and the debug views use.
   - `DepthView.ts`: the *Depth only*, *Ground* and *Foreground* debug views.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
   - `Plane.ts`: one plane, with its mesh, its gizmo and its controls.
@@ -82,6 +84,10 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
 ## Controls
 
 - **occlusion**, **bias (m)**: a virtual fragment is hidden where the real world is closer than it, by more than the bias.
+- **soft edges**: runs that test against the 4 nearest depth pixels and blends their answers by distance, so a
+  fragment near an occluder's edge fades out instead of being cut per depth pixel. The stair-steps of the
+  low-resolution depth become smooth slopes, at the same place. Transparent materials fade through their opacity;
+  opaque ones use alpha-to-coverage (with the renderer's antialiasing). Turn it off to compare.
 - **ground test**, **ground margin (m)**: a real point less than the margin (default 15 cm) above the recording's
   ground plane never hides anything. Noise in the road's depth can then no longer hide a plane lying on the road.
   This only affects virtual content near the ground. The trade-off: the bottom of shoes and wheels, within the margin,
@@ -94,8 +100,9 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
     dark purple is beyond the ZED's range (about 20 m), black is unknown.
   - *Ground*: the video, tinted green where the real world is within the ground margin and never occludes, darkened
     where there's no depth. Use it to tune the margin: the road should be green, people and objects not.
-  - *Foreground*: the video, tinted red where something stands in front of the background (the live depth is used there).
-    Use it to tune the background's margins and color test: people should be red, the empty set not.
+  - *Foreground*: the video, tinted where the live depth is used: red where something stands in front of the background,
+    blue where the background is stale (the live depth is farther), yellow where a hole inside the foreground was filled.
+    Use it to tune the background's margins, the color test and the depth filter: people should be red, the empty set not.
 - **ZED depth**: the ZED SDK settings the bridge computes depth with. Each change applies when you release the control,
   and the bridge shows the same frame again with it, so you can compare settings while paused.
   The defaults are at the top of `bridge.py` (`DEPTH_SETTINGS`); the bridge keeps changes until it restarts.
@@ -121,6 +128,29 @@ To use a bridge on another address or port, add `?ws=ws://host:port` to the page
     than a shadow). This removes the halo of background pixels that got a foreground object's depth, and the false
     foreground on noisy edges. **color tolerance** sets how different.
   - **use background** turns it all off, to compare.
+- **Depth filter**: steadies the choice between live and background depth, at depth resolution, on the GPU.
+  It runs on every render from the state after the previous frame, so its controls apply live, even while paused.
+  It starts over after a scene switch, a depth settings change and a new background.
+  - **filter** turns it off, to compare.
+  - **fg delay (frames)**: a pixel switches between live and background depth only after this many frames in a row,
+    which removes the flicker on noisy edges (foliage, scaffolding). 1 = no delay. The cost: a marginal pixel joins or
+    leaves the foreground that many frames late.
+  - **instant beyond (× margin)**: a pixel that differs from the background by more than this many times the fg margin
+    switches at once, with no delay. That's anyone clearly in front, so the leading edge of a moving person or car
+    doesn't lag.
+  - **depth smoothing** (0–0.95): blends each pixel's live depth with its previous value, to steady the depth of people;
+    a jump (someone walking past) is followed at once. 0 = off.
+  - **hole fill (px)**: a pixel more than half surrounded by foreground, within this radius, is a hole in it (unknown live
+    depth, or a color too close to the background's) and takes its neighbors' depth. 0 = off.
+  - **edge snap**: upsamples the result to the video's resolution, snapping its edges to the video's. Each video pixel
+    takes the depth of the nearby depth pixel that matches it best by distance and color (the best match, not an average,
+    which would invent depths between a car and the road). It can't separate colors that are alike, such as a car's dark
+    bumper and its shadow on the road. Turn it off to compare.
+  - **fattening (px)**: stereo depth spreads foreground objects outward, giving nearby background their depth. The
+    foreground's outer band this wide (in depth pixels) counts for less when snapping, so background pixels next to an
+    object match the background behind that band.
+  - **snap radius (px)**: how far, in depth pixels, a video pixel looks for its match.
+  - **snap color sigma**: how strictly colors must match. Lower follows color edges more closely but is more sensitive to noise.
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
   here; only the current recording's scene is rendered and only its folder is shown.
   Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
