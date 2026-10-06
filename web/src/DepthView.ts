@@ -1,20 +1,17 @@
 import * as THREE from "three";
 import type { Debug } from "./Debug";
-import type { Feed } from "./Feed";
 import type { Occluder } from "./Occluder";
 import type { People } from "./People";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-type View = "composite" | "depth" | "people" | "matte";
-const VIEW_INDEX = { depth: 0, people: 1, matte: 2 };
+type View = "composite" | "depth" | "matte";
+const VIEW_INDEX = { depth: 0, matte: 1 };
 
-// Full-screen debug views of the real-world depth, instead of the composite. All show
-// the depth occlusion uses: the Occluder's output.
-// - "Depth only": that depth as a colormap (red is near, blue is far, black has no depth).
-// - "People overlay": the video, magenta where the matte has a person (taken out of the depth),
-//   darkened where there's no depth.
-// - "People matte": the matte the bridge sends (white = person), whether the page uses it or
+// Full-screen debug views, instead of the composite.
+// - "Depth only": the depth occlusion uses (the Occluder's output) as a colormap (red is near,
+//   blue is far, black has no depth).
+// - "Robust Video Matting": the matte the bridge sends (white = person), whether the page uses it or
 //   not. Black when matting is off or unavailable.
 export class DepthView {
   readonly params = { view: "composite" as View };
@@ -24,7 +21,6 @@ export class DepthView {
 
   constructor(
     occluder: Occluder,
-    feed: Feed,
     people: People,
     debug: Debug,
   ) {
@@ -32,9 +28,7 @@ export class DepthView {
       new THREE.PlaneGeometry(2, 2),
       new THREE.ShaderMaterial({
         uniforms: {
-          uVideo: { value: feed.video },
           uMatte: people.uniforms.uMatte,
-          uMatteOn: people.uniforms.uMatteOn,
           uHasMatte: people.uniforms.uHasMatte,
           uOccluder: occluder.output,
           uView: this.uView,
@@ -45,9 +39,7 @@ export class DepthView {
           void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
         fragmentShader: `
           uniform sampler2D uOccluder;
-          uniform sampler2D uVideo;
           uniform sampler2D uMatte;
-          uniform bool uMatteOn;
           uniform bool uHasMatte;
           uniform int uView; // VIEW_INDEX
           uniform float uMax;
@@ -65,22 +57,13 @@ export class DepthView {
             return vec3(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2));
           }
           void main() {
-            if (uView == 2) {
+            if (uView == 1) {
               float alpha = uHasMatte ? texture2D(uMatte, vUv).r : 0.0;
               gl_FragColor = vec4(vec3(alpha), 1.0);
               return;
             }
             float d = texture2D(uOccluder, vUv).r;
-            if (uView == 0) {
-              gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
-              return;
-            }
-            vec3 color = texture2D(uVideo, vUv).rgb; // linear: the texture is sRGB
-            if (d <= 0.0) color *= 0.2;
-            // People, from the matte: magenta, as strong as their alpha. People are taken out of
-            // the depth above, so they'd be darkened as unknown.
-            if (uMatteOn) color = mix(color, vec3(1.0, 0.0, 1.0), 0.6 * texture2D(uMatte, vUv).r);
-            gl_FragColor = linearToOutputTexel(vec4(color, 1.0));
+            gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
           }`,
       }),
     );
@@ -91,8 +74,7 @@ export class DepthView {
       options: {
         Composite: "composite",
         "Depth only": "depth",
-        "People overlay": "people",
-        "People matte": "matte",
+        "Robust Video Matting": "matte",
       },
     });
   }

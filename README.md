@@ -37,14 +37,14 @@ turn stages off one by one to see what each contributes. The **Video › view** 
   matte's alpha as coverage, so their edges are as soft as the matte's (hair, hands). Next to a person, depth at about
   their depth is their halo, and is taken out too. Everything that isn't a person (props, furniture) occludes with its
   live depth.
-- **Controls** (_People_):
+- **Controls** (_Robust Video Matting_):
+  - **enable**: the bridge computes the matte, about 12 ms per frame at 640×360 on an RTX 3060 laptop GPU. Unticked,
+    the other controls are disabled, since they have no effect. The whole folder is disabled when ONNX Runtime or the
+    model is missing (the bridge prints why).
   - **use matte**: the page uses the matte, or ignores it, to compare.
-  - **status**: _on_, _off_, or _unavailable_ when ONNX Runtime or the model is missing (the bridge prints why).
-  - **matting (bridge)**: the bridge computes the matte, about 12 ms per frame at 640×360 on an RTX 3060 laptop GPU.
-  - **matting input**: the size of the image RVM gets; 1280×720 gives sharper edges, at about twice the cost.
+  - **resolution**: the size of the image RVM gets; 1280×720 gives sharper edges, at about twice the cost.
   - **matting ratio**: the share of that size RVM works at internally. Higher finds smaller (farther) people, but is slower.
-- **See it:** the _People matte_ view shows the raw matte (white = person); the _People overlay_ view shows people in
-  magenta.
+- **See it:** the _Robust Video Matting_ view shows the raw matte (white = person).
 - **Limits:** RVM is made for video where people are the main subject, so it misses small or distant people (under
   about 100 px tall). Where feet meet a plane on the ground, their depths are too close to tell which is in front, so the
   plane may draw over shoes. RVM is licensed under the GPL-3.0.
@@ -108,11 +108,11 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Bridge.ts`: the WebSocket to `bridge.py`, the protocol types, and the playback controls.
   - `Feed.ts`: the latest frame as textures (video, depth in meters, matte), plus `sampleDepth()`.
   - `ZedSettings.ts`: the _ZED depth_ controls.
-  - `People.ts`: stage 1's matte, from the bridge, and the _People_ controls.
+  - `People.ts`: stage 1's matte, from the bridge, and the _Robust Video Matting_ controls.
   - `Occluder.ts`: stage 1 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
   - `Occlusion.ts`: stage 2. `apply(material)` adds the occlusion test to any built-in material.
-  - `DepthView.ts`: the debug views (_Depth only_, _People overlay_, _People matte_).
+  - `DepthView.ts`: the debug views (_Depth only_, _Robust Video Matting_).
   - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.

@@ -1,4 +1,4 @@
-import type { FolderApi } from "tweakpane";
+import type { BladeApi, FolderApi } from "tweakpane";
 import type { Bridge } from "./Bridge";
 import type { Debug } from "./Debug";
 import type { Feed } from "./Feed";
@@ -13,8 +13,9 @@ export interface MattingInfo {
 
 // People, cut out of the video by the bridge's matting (Robust Video Matting): their alpha
 // matte gives their shape, depth gives their order (see Occluder and Occlusion).
-// Controls: whether the bridge computes the matte and at what resolution, and whether
-// the page uses it.
+// Controls (the "Robust Video Matting" folder): whether the bridge computes the matte and at
+// what resolution, and whether the page uses it. With matting off, or unavailable (no ONNX Runtime
+// or model: the bridge's log says which), the controls that depend on it are disabled.
 export class People {
   // uMatte: white = person, at video size, sampled in screen convention (uv from the bottom-left).
   readonly uniforms;
@@ -23,9 +24,10 @@ export class People {
     enabled: true,
     input: "640x360" as MattingInfo["input"],
     ratio: 0.5,
-    status: "waiting for the bridge",
   };
   private ui: FolderApi | null = null;
+  private enableBinding: BladeApi | null = null;
+  private dependent: BladeApi[] = []; // the controls that only matter with matting on
   private bridge: Bridge | null = null;
   private applied: MattingInfo | null = null; // as last reported by the bridge
 
@@ -40,19 +42,22 @@ export class People {
   // Called by App once the bridge exists, at this folder's place in the pane.
   addControls(debug: Debug, bridge: Bridge) {
     this.bridge = bridge;
-    const ui = debug.folder("People");
+    const ui = debug.folder("Robust Video Matting");
     if (!ui) return;
     this.ui = ui;
-    ui.addBinding(this.params, "use", { label: "use matte" });
-    ui.addBinding(this.params, "status", { readonly: true });
-    ui.addBinding(this.params, "enabled", { label: "matting (bridge)" })
-      .on("change", (e) => this.change("enabled", e.value, e.last));
-    ui.addBinding(this.params, "input", {
-      label: "matting input",
-      options: { "640×360 (faster)": "640x360", "1280×720 (sharper)": "1280x720" },
-    }).on("change", (e) => this.change("input", e.value, e.last));
-    ui.addBinding(this.params, "ratio", { label: "matting ratio", min: 0.1, max: 1, step: 0.05 })
-      .on("change", (e) => this.change("ratio", e.value, e.last));
+    this.enableBinding = ui.addBinding(this.params, "enabled", { label: "enable" }).on("change", (e) => {
+      this.change("enabled", e.value, e.last);
+      this.updateDisabled();
+    });
+    this.dependent = [
+      ui.addBinding(this.params, "use", { label: "use matte" }),
+      ui.addBinding(this.params, "input", {
+        label: "resolution",
+        options: { "640×360 (faster)": "640x360", "1280×720 (sharper)": "1280x720" },
+      }).on("change", (e) => this.change("input", e.value, e.last)),
+      ui.addBinding(this.params, "ratio", { label: "matting ratio", min: 0.1, max: 1, step: 0.05 })
+        .on("change", (e) => this.change("ratio", e.value, e.last)),
+    ];
   }
 
   // Call with each info from the bridge.
@@ -61,8 +66,14 @@ export class People {
     this.params.enabled = info.enabled;
     this.params.input = info.input;
     this.params.ratio = info.ratio;
-    this.params.status = !info.available ? "unavailable (see bridge log)" : info.enabled ? "on" : "off";
     this.ui?.refresh();
+    this.updateDisabled();
+  }
+
+  private updateDisabled() {
+    const available = this.applied?.available ?? true;
+    if (this.enableBinding) this.enableBinding.disabled = !available;
+    this.dependent.forEach((binding) => (binding.disabled = !available || !this.params.enabled));
   }
 
   // Call before rendering: the matte applies only when the last frame had one.

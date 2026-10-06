@@ -50,7 +50,7 @@ export class App {
       this.status,
       this.debug,
     );
-    this.depthView = new DepthView(this.occluder, this.feed, this.people, this.debug);
+    this.depthView = new DepthView(this.occluder, this.people, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.occlusion.addControls(this.debug);
     this.people.addControls(this.debug, this.bridge);
