@@ -21,7 +21,7 @@ flowchart LR
 - the left color image (1280×720 JPEG);
 - the depth map (640×360 or 1280×720, in millimeters);
 - with matting on, the people's alpha matte, computed by Robust Video Matting (`matting.py`);
-- with detection on, the objects the ZED SDK detects (see Objects below; not part of occlusion).
+- with detection on, the objects the ZED SDK detects (see Object Detection below; not part of occlusion).
 
 **The page** works out, for every pixel, the real depth that should hide virtual content. Stage 1 runs as one GPU
 pass (`Occluder.ts`), and stage 2 runs inside the virtual materials (`Occlusion.ts`).
@@ -76,10 +76,10 @@ shows the same frame again with it, so you can compare settings while paused. Th
 - **drop saturated**: removes pixels in over-exposed areas.
 - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
 
-### Objects (ZED object detection, not part of occlusion)
+### Object Detection (ZED SDK, not part of occlusion)
 
 The bridge runs the ZED SDK's object detection on each frame and sends what it finds with that frame, so the objects
-always match the video and depth shown. The page draws each one as a 3D box with its label and tracking id (people in
+always match the video and depth shown. The page draws each one as a 3D or 2D box with its label and tracking id (people in
 magenta, vehicles in cyan, anything else in yellow; fainter while the SDK has lost it and only predicts where it is).
 The boxes are drawn over everything: they show what the bridge sees, and aren't part of the scene.
 
@@ -87,11 +87,18 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   and finer sub-label (e.g. VEHICLE / BUS), confidence, tracking state, whether it's moving, and in the camera's frame
   (the scene's): position, velocity (m/s), dimensions, the 8 corners of its 3D box, and its 2D box in video pixels.
   `Detections.objects` holds the last frame's, for content that reacts to them.
-- **Controls** (_Objects_): **show boxes** (page only), **detection (bridge)** (on/off), **model**, **min confidence**.
+- **Controls** (_Object Detection_): **enable** (the bridge detects; unticked, the other controls are disabled),
+  **boxes** (page only: _3D_, _2D_ on the video's pixels, or _None_), **show mask**
+  (each object's mask, in its color: the bridge computes them only while this is on, about 15 ms more per frame),
+  **objects** (how many in the frame), **model**, **min confidence**. If detection can't
+  start, the bridge's log says why.
   - _Multi-class_ (fast, medium, accurate): people, vehicles, bags, animals, electronics, fruit and vegetables, sports
     equipment.
   - _Heads_ (fast, accurate): people's heads only, which holds up better when people overlap.
-- **Cost:** about 10 ms per frame with the fast multi-class model (measured on the street recording).
+- **Cost:** about 10 ms per frame with the fast multi-class model (measured on the street recording), about 15 ms more
+  with masks.
+- **See it:** the _Object Detection_ view shows all the masks in white on black, like the _Robust Video Matting_ view
+  shows the matte, to compare the two. The SDK's masks are coarse (blocky, cut to each object's 2D box).
 - **First use of a model:** the SDK optimizes it for the GPU, then caches it. That took under a second for the
   multi-class models here (already optimized), but the heads fast model estimated **33 minutes**, during which the
   bridge sends nothing (its log shows the progress). Switch to a new model well before you need it.
@@ -112,8 +119,8 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Occluder.ts`: stage 1 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
   - `Occlusion.ts`: stage 2. `apply(material)` adds the occlusion test to any built-in material.
-  - `DepthView.ts`: the debug views (_Depth only_, _Robust Video Matting_).
-  - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
+  - `DepthView.ts`: the debug views (_Depth only_, _Robust Video Matting_, _Object Detection_).
+  - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Object Detection_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
   - `Plane.ts`: one plane, with its mesh, its gizmo and its controls.
@@ -160,7 +167,7 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
 
 The first run with each NEURAL depth mode (NEURAL_LIGHT, NEURAL, NEURAL_PLUS) downloads its AI model
 and optimizes it for the GPU, which takes a few minutes. Later runs start in seconds. Object detection models do the
-same the first time each is used, which can take much longer (see Objects above).
+same the first time each is used, which can take much longer (see Object Detection above).
 
 ## Run
 

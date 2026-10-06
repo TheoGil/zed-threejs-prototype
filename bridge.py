@@ -17,6 +17,10 @@ Protocol (ws://localhost:8765):
                  0 = unknown, 65535 = too far (beyond the ZED's range)]
          if flags & HAS_OBJECTS: [objects length: uint32 little-endian]
                                  [objects detected: UTF-8 JSON list, see object_info()]
+         if flags & HAS_OBJECT_MASKS: [masks length: uint32 little-endian]
+                                      [objects' masks: grayscale PNG, video size, each pixel
+                                       1 + the index in the objects list of the object there,
+                                       0 = none]
          if flags & HAS_MATTE: [matte length: uint32 little-endian]
                                [people's alpha matte: grayscale JPEG, video size, 255 = person]
          [color: JPEG bytes, until end of message]
@@ -72,12 +76,13 @@ MATTING_INPUTS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 MATTE_JPEG_QUALITY = 90
 
 # ZED SDK object detection (built-in models), which the page can change. The confidence applies
-# from the next frame; changing the model takes about a second (minutes the first time a model
-# is used: the SDK optimizes it for the GPU, then caches it).
+# from the next frame; changing the model or masks takes about a second (minutes the first time
+# a model is used: the SDK optimizes it for the GPU, then caches it).
 DETECTION_SETTINGS = dict(
     enabled=True,
     model="MULTI_CLASS_BOX_FAST",  # one of DETECTION_MODELS
     confidence=50,  # 1-99, objects detected with less are dropped
+    masks=False,  # each object's mask (the SDK's segmentation), about 15 ms more per frame
 )
 DETECTION_MODELS = [
     "MULTI_CLASS_BOX_FAST", "MULTI_CLASS_BOX_MEDIUM", "MULTI_CLASS_BOX_ACCURATE",  # people, vehicles, bags...
@@ -86,16 +91,17 @@ DETECTION_MODELS = [
 
 # Binary message kinds (the first byte of the 2-byte header), and flags (the second).
 FRAME = 0
-HAS_MATTE, HAS_OBJECTS = 1, 2
+HAS_MATTE, HAS_OBJECTS, HAS_OBJECT_MASKS = 1, 2, 4
 # Depth beyond the ZED's range (+inf from the SDK), sent as the largest uint16: "nothing within
 # range here" never occludes, unlike an unknown pixel (0). The page reads it as 65.535 m.
 TOO_FAR_MM = 65535
 
 
-def encode_frame(bgr, depth_m, matte=None, objects=None):
+def encode_frame(bgr, depth_m, matte=None, objects=None, object_masks=None):
     """bgr: HxWx3 uint8, depth_m: float32 meters
     (+inf = too far, NaN/-inf/0 = unknown), matte: HxW uint8 or None,
-    objects: a list of object_info() or None (detection off)."""
+    objects: a list of object_info() or None (detection off),
+    object_masks: HxW uint8 (see ZedSource.detect) or None."""
     mm = np.nan_to_num(depth_m, nan=0.0, posinf=TOO_FAR_MM / 1000, neginf=0.0) * 1000.0
     mm = np.clip(mm, 0, TOO_FAR_MM).astype("<u2")
     ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
@@ -105,6 +111,11 @@ def encode_frame(bgr, depth_m, matte=None, objects=None):
         flags |= HAS_OBJECTS
         data = json.dumps(objects, separators=(",", ":")).encode()
         parts += [len(data).to_bytes(4, "little"), data]
+    if object_masks is not None:
+        flags |= HAS_OBJECT_MASKS
+        # Lossless, unlike the matte: the values are object indices. Mostly empty, so it stays small.
+        ok, png = cv2.imencode(".png", object_masks, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        parts += [len(png).to_bytes(4, "little"), png.tobytes()]
     if matte is not None:
         flags |= HAS_MATTE
         # A grayscale JPEG: a few dozen KB instead of about 900 KB raw, without the cost of compressing it losslessly.
@@ -160,6 +171,8 @@ def update_detection_settings(settings, changes):
         settings["confidence"] = min(max(int(changes["confidence"]), 1), 99)
     if changes.get("model") in DETECTION_MODELS:
         settings["model"] = changes["model"]
+    if "masks" in changes:
+        settings["masks"] = bool(changes["masks"])
     return settings
 
 
@@ -215,10 +228,11 @@ class ZedSource:
         self.depth = sl.Mat()
         self.set_depth_settings(depth_settings)
 
-        self.detection_model = None  # the model enabled, None when detection is off
+        self.detection = None  # (model, masks) enabled, None when detection is off
         self.detection_runtime = sl.ObjectDetectionRuntimeParameters()
         self.objects = sl.Objects()
         native = info.camera_configuration.resolution
+        self.native_size = (native.width, native.height)  # of the 2D boxes and masks
         self.box_scale = (IMG_W / native.width, IMG_H / native.height)
 
     def set_depth_settings(self, settings):
@@ -234,14 +248,15 @@ class ZedSource:
         Returns None, or why detection couldn't start."""
         sl = self.sl
         self.detection_runtime.detection_confidence_threshold = settings["confidence"]
-        model = settings["model"] if settings["enabled"] else None
-        if model == self.detection_model:
+        detection = (settings["model"], settings["masks"]) if settings["enabled"] else None
+        if detection == self.detection:
             return None
-        if self.detection_model:
+        if self.detection:
             self.cam.disable_object_detection()
-            self.detection_model = None
-        if not model:
+            self.detection = None
+        if not detection:
             return None
+        model, masks = detection
         # Tracking objects across frames (stable ids, velocity) needs positional tracking.
         if not self.cam.is_positional_tracking_enabled():
             tracking = sl.PositionalTrackingParameters()
@@ -252,18 +267,38 @@ class ZedSource:
         params = sl.ObjectDetectionParameters()
         params.detection_model = getattr(sl.OBJECT_DETECTION_MODEL, model)
         params.enable_tracking = True
+        params.enable_segmentation = masks
         err = self.cam.enable_object_detection(params)
         if err != sl.ERROR_CODE.SUCCESS:
             return str(err)
-        self.detection_model = model
+        self.detection = detection
         return None
 
     def detect(self):
-        """The objects detected in the frame last grabbed (see object_info), or None when detection is off."""
-        if not self.detection_model:
-            return None
+        """(objects, masks) for the frame last grabbed. objects: the objects detected (see
+        object_info), None when detection is off. masks, with masks on: a video-size uint8 image,
+        each pixel 1 + the index in `objects` of the object there (0 = none; where objects
+        overlap, the later one), else None."""
+        if not self.detection:
+            return None, None
         self.cam.retrieve_objects(self.objects, self.detection_runtime)
-        return [object_info(obj, self.box_scale) for obj in self.objects.object_list]
+        object_list = self.objects.object_list
+        objects = [object_info(obj, self.box_scale) for obj in object_list]
+        if not self.detection[1]:
+            return objects, None
+        width, height = self.native_size
+        masks = np.zeros((height, width), np.uint8)
+        for i, obj in enumerate(object_list[:255]):
+            box = np.asarray(obj.bounding_box_2d, dtype=int).reshape(-1, 2)
+            if not obj.mask.is_init() or len(box) != 4:
+                continue
+            # The mask covers the object's 2D box, from its top-left corner, at native resolution.
+            mask = obj.mask.get_data()
+            x, y = np.maximum(box[0], 0)
+            h, w = min(mask.shape[0], height - y), min(mask.shape[1], width - x)
+            if h > 0 and w > 0:
+                masks[y:y + h, x:x + w][mask[:h, :w] > 0] = i + 1
+        return objects, cv2.resize(masks, (IMG_W, IMG_H), interpolation=cv2.INTER_NEAREST)
 
     # The SVO frame last grabbed (None for a live camera), and going back to it:
     # the next grab returns the frame at the position set.
@@ -387,7 +422,7 @@ async def main():
         if frame:
             bgr, depth_m = frame
             # Detection itself runs in grab(); this only reads its results.
-            objects = source.detect()
+            objects, object_masks = source.detect()
             matte = None
             if matting and matting_settings["enabled"]:
                 start = time.perf_counter()
@@ -397,7 +432,7 @@ async def main():
                 if size != (IMG_W, IMG_H):
                     matte = cv2.resize(matte, (IMG_W, IMG_H), interpolation=cv2.INTER_LINEAR)
                 matting_time += time.perf_counter() - start
-            message = encode_frame(bgr, depth_m, matte, objects)
+            message = encode_frame(bgr, depth_m, matte, objects, object_masks)
             # Skip pages that haven't taken the previous frame yet (e.g. a hidden tab):
             # queuing frames for them slows the bridge down for everyone.
             ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(message)]
@@ -444,8 +479,10 @@ async def main():
 
             if requested_detection is not None:
                 detection_settings, requested_detection = requested_detection, None
-                if detection_settings["enabled"] and detection_settings["model"] != source.detection_model:
-                    print(f"Enabling object detection ({detection_settings['model']})...")
+                wanted = (detection_settings["model"], detection_settings["masks"])
+                if detection_settings["enabled"] and wanted != source.detection:
+                    masks = " with masks" if detection_settings["masks"] else ""
+                    print(f"Enabling object detection ({detection_settings['model']}{masks})...")
                 detection_error = source.set_detection(detection_settings)
                 if detection_error:
                     print(f"Object detection unavailable: {detection_error}")

@@ -32,6 +32,9 @@ export interface Frame {
   depthMm: Uint16Array; // depthWidth * depthHeight, millimeters, 0 = invalid
   matte: HTMLImageElement | null; // people's alpha matte, video size (white = person), when matting is on
   objects: DetectedObject[] | null; // the objects detected in this frame, when detection is on
+  // The objects' masks, video size, when masks are on: each pixel's red is 1 + the index in
+  // `objects` of the object there, over 255 (0 = none).
+  objectMasks: HTMLImageElement | null;
 }
 
 interface Handlers {
@@ -43,6 +46,7 @@ interface Handlers {
 const FRAME = 0;
 const HAS_MATTE = 1;
 const HAS_OBJECTS = 2;
+const HAS_OBJECT_MASKS = 4;
 const HEADER_BYTES = 2;
 
 // The connection to bridge.py. Receives the stream info and the frames,
@@ -170,7 +174,8 @@ export class Bridge {
 }
 
 // A frame message: [header][depth: uint16 mm]([objects length: uint32][objects: JSON])
-// ([matte length: uint32][matte: JPEG])[color: JPEG]. null if a JPEG is broken.
+// ([masks length: uint32][objects' masks: PNG])([matte length: uint32][matte: JPEG])[color: JPEG].
+// null if an image is broken.
 async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
   const flags = new Uint8Array(buffer, 1, 1)[0];
   let offset = HEADER_BYTES;
@@ -183,6 +188,12 @@ async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: numb
     objects = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, offset + 4, length)));
     offset += 4 + length;
   }
+  let masksPng: Uint8Array<ArrayBuffer> | null = null;
+  if (flags & HAS_OBJECT_MASKS) {
+    const length = new DataView(buffer, offset, 4).getUint32(0, true);
+    masksPng = new Uint8Array(buffer, offset + 4, length);
+    offset += 4 + length;
+  }
   let matteJpeg: Uint8Array<ArrayBuffer> | null = null;
   if (flags & HAS_MATTE) {
     const length = new DataView(buffer, offset, 4).getUint32(0, true);
@@ -190,18 +201,19 @@ async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: numb
     offset += 4 + length;
   }
   try {
-    const [image, matte] = await Promise.all([
-      decodeJpeg(new Uint8Array(buffer, offset)),
-      matteJpeg ? decodeJpeg(matteJpeg) : null,
+    const [image, matte, objectMasks] = await Promise.all([
+      decodeImage(new Uint8Array(buffer, offset), "image/jpeg"),
+      matteJpeg ? decodeImage(matteJpeg, "image/jpeg") : null,
+      masksPng ? decodeImage(masksPng, "image/png") : null,
     ]);
-    return { image, depthMm, matte, objects };
+    return { image, depthMm, matte, objects, objectMasks };
   } catch {
     return null;
   }
 }
 
-async function decodeJpeg(bytes: Uint8Array<ArrayBuffer>): Promise<HTMLImageElement> {
-  const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+async function decodeImage(bytes: Uint8Array<ArrayBuffer>, type: string): Promise<HTMLImageElement> {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
   const image = new Image();
   image.src = url;
   try {

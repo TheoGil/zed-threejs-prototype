@@ -1,18 +1,21 @@
 import * as THREE from "three";
 import type { Debug } from "./Debug";
+import type { Detections } from "./Detections";
 import type { Occluder } from "./Occluder";
 import type { People } from "./People";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-type View = "composite" | "depth" | "matte";
-const VIEW_INDEX = { depth: 0, matte: 1 };
+type View = "composite" | "depth" | "matte" | "objects";
+const VIEW_INDEX = { depth: 0, matte: 1, objects: 2 };
 
 // Full-screen debug views, instead of the composite.
 // - "Depth only": the depth occlusion uses (the Occluder's output) as a colormap (red is near,
 //   blue is far, black has no depth).
 // - "Robust Video Matting": the matte the bridge sends (white = person), whether the page uses it or
 //   not. Black when matting is off or unavailable.
+// - "Object Detection": all the objects' masks from the ZED SDK (white = an object), to compare
+//   with the matte. Black unless Object Detection's "show mask" is on.
 export class DepthView {
   readonly params = { view: "composite" as View };
   private readonly scene = new THREE.Scene();
@@ -22,6 +25,7 @@ export class DepthView {
   constructor(
     occluder: Occluder,
     people: People,
+    detections: Detections,
     debug: Debug,
   ) {
     const quad = new THREE.Mesh(
@@ -29,6 +33,7 @@ export class DepthView {
       new THREE.ShaderMaterial({
         uniforms: {
           uMatte: people.uniforms.uMatte,
+          ...detections.maskUniforms,
           uHasMatte: people.uniforms.uHasMatte,
           uOccluder: occluder.output,
           uView: this.uView,
@@ -40,6 +45,8 @@ export class DepthView {
         fragmentShader: `
           uniform sampler2D uOccluder;
           uniform sampler2D uMatte;
+          uniform sampler2D uObjectMasks;
+          uniform bool uObjectMasksOn;
           uniform bool uHasMatte;
           uniform int uView; // VIEW_INDEX
           uniform float uMax;
@@ -57,6 +64,11 @@ export class DepthView {
             return vec3(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2));
           }
           void main() {
+            if (uView == 2) {
+              bool object = uObjectMasksOn && texture2D(uObjectMasks, vUv).r > 0.5 / 255.0;
+              gl_FragColor = vec4(vec3(object ? 1.0 : 0.0), 1.0);
+              return;
+            }
             if (uView == 1) {
               float alpha = uHasMatte ? texture2D(uMatte, vUv).r : 0.0;
               gl_FragColor = vec4(vec3(alpha), 1.0);
@@ -75,6 +87,7 @@ export class DepthView {
         Composite: "composite",
         "Depth only": "depth",
         "Robust Video Matting": "matte",
+        "Object Detection": "objects",
       },
     });
   }

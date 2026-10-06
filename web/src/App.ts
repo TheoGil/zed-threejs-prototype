@@ -23,7 +23,7 @@ export class App {
   private readonly feed = new Feed();
   private readonly people = new People(this.feed);
   private readonly occluder = new Occluder(this.feed, this.people);
-  private readonly detections = new Detections();
+  private readonly detections = new Detections(this.camera);
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
   private readonly zedSettings: ZedSettings;
@@ -45,12 +45,13 @@ export class App {
         onFrame: (frame) => {
           this.feed.update(frame);
           this.detections.update(frame.objects);
+          this.detections.setMasks(frame.objectMasks);
         },
       },
       this.status,
       this.debug,
     );
-    this.depthView = new DepthView(this.occluder, this.people, this.debug);
+    this.depthView = new DepthView(this.occluder, this.people, this.detections, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.occlusion.addControls(this.debug);
     this.people.addControls(this.debug, this.bridge);
