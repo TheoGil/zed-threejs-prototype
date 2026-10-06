@@ -6,10 +6,12 @@ import type { People } from "./People";
 // The occlusion test, in the virtual materials: a fragment farther from the camera than the
 // real depth at its pixel is hidden. The real depth comes from the Occluder.
 //
-// Soft edges: the test runs against the 4 nearest depth pixels, and their answers are blended
+// Edges: the test runs against the 4 nearest depth pixels, and their answers are blended
 // by distance (like percentage-closer filtering for shadow maps). The fragment fades by that
 // coverage instead of being cut per depth pixel, so the stair-steps of the low-resolution
-// depth become smooth slopes, with each depth pixel's decision unchanged.
+// depth become smooth slopes, with each depth pixel's decision unchanged. The edge width sets
+// how many depth pixels the fade spans: below 1 the blend is sharpened (0 = hard edges), above
+// 1 it's averaged over 4 positions around the fragment, which widens it without moving it.
 //
 // People occlude with their own depth (the Occluder's B), and with the matte's alpha as
 // coverage, read at full resolution: their edges are as soft as the matte's.
@@ -21,9 +23,9 @@ export class Occlusion {
       uOccluder: occluder.output,
       uOccluderSize: occluder.outputSize,
       uResolution: { value: new THREE.Vector2() },
-      uBias: { value: 0.05 },
+      uBias: { value: 0.3 },
       uOcclusion: { value: true },
-      uSoftEdges: { value: true },
+      uEdgeWidth: { value: 3.5 }, // depth pixels the edges' fade spans, 0 = hard edges
       uMatte: people.uniforms.uMatte,
       uMatteOn: people.uniforms.uMatteOn,
     };
@@ -34,8 +36,17 @@ export class Occlusion {
     const ui = debug.folder("Occlusion");
     if (!ui) return;
     ui.addBinding(this.uniforms.uOcclusion, "value", { label: "occlusion" });
-    ui.addBinding(this.uniforms.uBias, "value", { label: "bias (m)", min: 0, max: 0.5 });
-    ui.addBinding(this.uniforms.uSoftEdges, "value", { label: "soft edges" });
+    ui.addBinding(this.uniforms.uBias, "value", {
+      label: "bias (m)",
+      min: 0,
+      max: 0.5,
+    });
+    ui.addBinding(this.uniforms.uEdgeWidth, "value", {
+      label: "edge width (px)",
+      min: 0,
+      max: 4,
+      step: 0.1,
+    });
   }
 
   // Call when the canvas size changes: the shader maps gl_FragCoord to the depth texture.
@@ -56,7 +67,7 @@ export class Occlusion {
         uniform vec2 uResolution;
         uniform float uBias;
         uniform bool uOcclusion;
-        uniform bool uSoftEdges;
+        uniform float uEdgeWidth;
         uniform sampler2D uMatte;
         uniform bool uMatteOn;
 
@@ -66,6 +77,20 @@ export class Occlusion {
           float realDepth = texture2D(uOccluder, (texel + 0.5) / uOccluderSize).r;
           return realDepth > 0.0 && fragmentDepth > realDepth + uBias ? 1.0 : 0.0;
         }
+
+        // The share of this fragment hidden at 'position' (in occluder pixels): the test against
+        // the 4 nearest occluder pixels, blended by distance. 'sharpness' narrows the blend toward
+        // the middle of the step: 0 keeps it (one pixel wide), 1 makes it hard.
+        float coverageAt(vec2 position, float fragmentDepth, float sharpness) {
+          vec2 base = floor(position);
+          vec2 blend = position - base;
+          float half_ = 0.5 * (1.0 - sharpness);
+          blend = half_ > 0.001 ? smoothstep(0.5 - half_, 0.5 + half_, blend) : step(0.5, blend);
+          return mix(
+            mix(occludes(base, fragmentDepth), occludes(base + vec2(1.0, 0.0), fragmentDepth), blend.x),
+            mix(occludes(base + vec2(0.0, 1.0), fragmentDepth), occludes(base + vec2(1.0, 1.0), fragmentDepth), blend.x),
+            blend.y);
+        }
         ` +
         shader.fragmentShader
           .replace(
@@ -74,15 +99,22 @@ export class Occlusion {
             float occlusionVisibility = 1.0;
             if (uOcclusion) {
               vec2 screenUv = gl_FragCoord.xy / uResolution;
-              // The 4 occluder pixels around this fragment, and its position between them.
+              // This fragment's position among the occluder pixels.
               vec2 position = screenUv * uOccluderSize - 0.5;
-              vec2 base = floor(position);
-              vec2 blend = position - base;
-              if (!uSoftEdges) blend = step(0.5, blend); // the nearest pixel only: hard edges
-              float coverage = mix(
-                mix(occludes(base, vViewPosition.z), occludes(base + vec2(1.0, 0.0), vViewPosition.z), blend.x),
-                mix(occludes(base + vec2(0.0, 1.0), vViewPosition.z), occludes(base + vec2(1.0, 1.0), vViewPosition.z), blend.x),
-                blend.y);
+              float coverage;
+              if (uEdgeWidth <= 1.0) {
+                // Up to one pixel wide: the 4-pixel blend, sharpened (0 = hard edges).
+                coverage = coverageAt(position, vViewPosition.z, 1.0 - uEdgeWidth);
+              } else {
+                // Wider: the blend averaged over 4 positions around this one, which spreads the
+                // fade evenly on both sides of the edge without moving it.
+                float r = 0.5 * (uEdgeWidth - 1.0);
+                coverage = 0.25 * (
+                  coverageAt(position + vec2(-r, -r), vViewPosition.z, 0.0) +
+                  coverageAt(position + vec2(r, -r), vViewPosition.z, 0.0) +
+                  coverageAt(position + vec2(-r, r), vViewPosition.z, 0.0) +
+                  coverageAt(position + vec2(r, r), vViewPosition.z, 0.0));
+              }
               // A person here, in front of this fragment: hidden by the matte's alpha.
               float personDepth = texture2D(uOccluder, screenUv).b;
               if (uMatteOn && personDepth > 0.0 && vViewPosition.z > personDepth + uBias)

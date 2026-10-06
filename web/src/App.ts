@@ -32,7 +32,7 @@ export class App {
   private readonly recordings: Recordings;
 
   // The order of the addControls() calls sets the order of the folders in the debug pane:
-  // the occlusion pipeline's stages, in order (see the README), then the objects detected.
+  // the inputs (video, ZED depth), the occlusion test, people, then the objects detected.
   constructor(defaultPlanes: DefaultPlanes) {
     const canvas = this.renderer.domElement;
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -52,8 +52,8 @@ export class App {
     );
     this.depthView = new DepthView(this.occluder, this.feed, this.people, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
-    this.people.addControls(this.debug, this.bridge);
     this.occlusion.addControls(this.debug);
+    this.people.addControls(this.debug, this.bridge);
     this.detections.addControls(this.debug, this.bridge);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(

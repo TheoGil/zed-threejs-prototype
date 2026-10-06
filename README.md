@@ -11,7 +11,7 @@ flowchart LR
   zed["ZED camera / .svo"] --> bridge["bridge.py<br/>color · depth · people matte"]
   bridge -- "WebSocket" --> people
   subgraph page["Page (web/): which real depth hides virtual content, per pixel"]
-    people["1 · People<br/>matte shape, person depth"] --> test["2 · Occlusion test<br/>bias · soft edges"]
+    people["1 · People<br/>matte shape, person depth"] --> test["2 · Occlusion test<br/>bias · edge width"]
   end
   test --> out["Composite"]
 ```
@@ -26,8 +26,8 @@ flowchart LR
 **The page** works out, for every pixel, the real depth that should hide virtual content. Stage 1 runs as one GPU
 pass (`Occluder.ts`), and stage 2 runs inside the virtual materials (`Occlusion.ts`).
 
-The pane's folders follow the same order, and each one starts with its on/off toggle: turn stages off one by one
-to see what each contributes. The **Video › view** dropdown has a debug view for most stages.
+Each stage's folder in the pane starts with its on/off toggle (_Occlusion_ comes first, right after the inputs):
+turn stages off one by one to see what each contributes. The **Video › view** dropdown has a debug view for most stages.
 
 ### 1 · People: shape from the matte, order from depth
 
@@ -52,10 +52,12 @@ to see what each contributes. The **Video › view** dropdown has a debug view f
 ### 2 · Occlusion test
 
 - **How:** a virtual fragment is hidden where the real depth (from stage 1) is closer than it by more than the
-  **bias**. With **soft edges**, the test runs against the 4 nearest depth pixels and blends their answers by distance,
-  so the stair-steps of the low-resolution depth become smooth slopes, at the same place. Transparent materials fade
-  through their opacity; opaque ones use alpha-to-coverage, with the renderer's antialiasing.
-- **Controls** (_Occlusion_): **occlusion** (on/off), **bias (m)**, **soft edges**.
+  **bias**. The test runs against the 4 nearest depth pixels and blends their answers by distance, so the stair-steps
+  of the low-resolution depth become smooth slopes, at the same place. **edge width (px)** sets how many depth pixels
+  that fade spans: 1 by default, narrower down to 0 (hard edges), wider up to 4 (averaged over 4 positions around each
+  fragment, so the edge stays in place). Transparent materials fade through their opacity;
+  opaque ones use alpha-to-coverage, with the renderer's antialiasing.
+- **Controls** (_Occlusion_): **occlusion** (on/off), **bias (m)**, **edge width (px)**.
 - **See it:** _Composite_ (the final render), and _Depth only_: the depth used, as a colormap (red is near, blue is
   far, dark purple is beyond the ZED's range of about 20 m, black is unknown). People are excluded from it.
 
