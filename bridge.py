@@ -284,11 +284,14 @@ async def main():
 
     async def handler(ws):
         nonlocal requested_scene, requested_depth, requested_capture
+        # Queued without waiting, like the frames: awaiting a send waits for the connection to
+        # drain, which the frames broadcast meanwhile can keep from ever happening, and then this
+        # handler would never read the page's messages. The page gets the info before any frame.
+        websockets.broadcast([ws], info)
+        if background:
+            websockets.broadcast([ws], background.message())
         clients.add(ws)
         try:
-            await ws.send(info)
-            if background:
-                await ws.send(background.message())
             async for message in ws:
                 msg = json.loads(message)
                 if msg.get("type") == "control":
