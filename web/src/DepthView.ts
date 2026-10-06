@@ -6,14 +6,14 @@ import type { People } from "./People";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-type View = "composite" | "depth" | "fill" | "matte";
-const VIEW_INDEX = { depth: 0, fill: 1, matte: 2 };
+type View = "composite" | "depth" | "people" | "matte";
+const VIEW_INDEX = { depth: 0, people: 1, matte: 2 };
 
 // Full-screen debug views of the real-world depth, instead of the composite. All show
 // the depth occlusion uses: the Occluder's output.
 // - "Depth only": that depth as a colormap (red is near, blue is far, black has no depth).
-// - "Holes & people": the video, yellow where a hole was filled, magenta where the matte has a
-//   person (taken out of the depth). Darkened where there's no depth.
+// - "People overlay": the video, magenta where the matte has a person (taken out of the depth),
+//   darkened where there's no depth.
 // - "People matte": the matte the bridge sends (white = person), whether the page uses it or
 //   not. Black when matting is off or unavailable.
 export class DepthView {
@@ -70,19 +70,13 @@ export class DepthView {
               gl_FragColor = vec4(vec3(alpha), 1.0);
               return;
             }
-            vec4 occluder4 = texture2D(uOccluder, vUv);
-            vec2 occluder = occluder4.rg;
-            float d = occluder.r;
+            float d = texture2D(uOccluder, vUv).r;
             if (uView == 0) {
               gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
               return;
             }
             vec3 color = texture2D(uVideo, vUv).rgb; // linear: the texture is sRGB
-            if (d <= 0.0) {
-              color *= 0.2;
-            } else if (occluder.g > 0.25 && occluder.g < 0.75) {
-              color = mix(color, vec3(1.0, 0.9, 0.0), 0.5); // filled hole
-            }
+            if (d <= 0.0) color *= 0.2;
             // People, from the matte: magenta, as strong as their alpha. People are taken out of
             // the depth above, so they'd be darkened as unknown.
             if (uMatteOn) color = mix(color, vec3(1.0, 0.0, 1.0), 0.6 * texture2D(uMatte, vUv).r);
@@ -97,7 +91,7 @@ export class DepthView {
       options: {
         Composite: "composite",
         "Depth only": "depth",
-        "Holes & people": "fill",
+        "People overlay": "people",
         "People matte": "matte",
       },
     });

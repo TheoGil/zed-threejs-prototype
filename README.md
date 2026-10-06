@@ -11,8 +11,7 @@ flowchart LR
   zed["ZED camera / .svo"] --> bridge["bridge.py<br/>color · depth · people matte"]
   bridge -- "WebSocket" --> people
   subgraph page["Page (web/): which real depth hides virtual content, per pixel"]
-    people["1 · People<br/>matte shape, person depth"] --> holes["2 · Holes<br/>fill gaps in depth"]
-    holes --> test["3 · Occlusion test<br/>bias · soft edges"]
+    people["1 · People<br/>matte shape, person depth"] --> test["2 · Occlusion test<br/>bias · soft edges"]
   end
   test --> out["Composite"]
 ```
@@ -24,8 +23,8 @@ flowchart LR
 - with matting on, the people's alpha matte, computed by Robust Video Matting (`matting.py`);
 - with detection on, the objects the ZED SDK detects (see Objects below; not part of occlusion).
 
-**The page** works out, for every pixel, the real depth that should hide virtual content. Stages 1–2 run as one GPU
-pass (`Occluder.ts`), and stage 3 runs inside the virtual materials (`Occlusion.ts`).
+**The page** works out, for every pixel, the real depth that should hide virtual content. Stage 1 runs as one GPU
+pass (`Occluder.ts`), and stage 2 runs inside the virtual materials (`Occlusion.ts`).
 
 The pane's folders follow the same order, and each one starts with its on/off toggle: turn stages off one by one
 to see what each contributes. The **Video › view** dropdown has a debug view for most stages.
@@ -44,23 +43,15 @@ to see what each contributes. The **Video › view** dropdown has a debug view f
   - **matting (bridge)**: the bridge computes the matte, about 12 ms per frame at 640×360 on an RTX 3060 laptop GPU.
   - **matting input**: the size of the image RVM gets; 1280×720 gives sharper edges, at about twice the cost.
   - **matting ratio**: the share of that size RVM works at internally. Higher finds smaller (farther) people, but is slower.
-- **See it:** the _People matte_ view shows the raw matte (white = person); the _Holes & people_ view shows people in
+- **See it:** the _People matte_ view shows the raw matte (white = person); the _People overlay_ view shows people in
   magenta.
 - **Limits:** RVM is made for video where people are the main subject, so it misses small or distant people (under
   about 100 px tall). Where feet meet a plane on the ground, their depths are too close to tell which is in front, so the
   plane may draw over shoes. RVM is licensed under the GPL-3.0.
 
-### 2 · Holes: fill gaps in depth
+### 2 · Occlusion test
 
-- **Problem:** the depth has gaps (unknown depth), and the virtual content shows through them.
-- **How:** an unknown pixel more than half surrounded by known depth, within **hole fill (px)**, takes its neighbors'
-  mean depth.
-- **Controls** (_Holes_): **fill holes** (on/off) and **hole fill (px)**.
-- **See it:** _Holes & people_ view: filled holes are yellow.
-
-### 3 · Occlusion test
-
-- **How:** a virtual fragment is hidden where the real depth (from stages 1–2) is closer than it by more than the
+- **How:** a virtual fragment is hidden where the real depth (from stage 1) is closer than it by more than the
   **bias**. With **soft edges**, the test runs against the 4 nearest depth pixels and blends their answers by distance,
   so the stair-steps of the low-resolution depth become smooth slopes, at the same place. Transparent materials fade
   through their opacity; opaque ones use alpha-to-coverage, with the renderer's antialiasing.
@@ -116,10 +107,10 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Feed.ts`: the latest frame as textures (video, depth in meters, matte), plus `sampleDepth()`.
   - `ZedSettings.ts`: the _ZED depth_ controls.
   - `People.ts`: stage 1's matte, from the bridge, and the _People_ controls.
-  - `Occluder.ts`: stages 1–2 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
+  - `Occluder.ts`: stage 1 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
-  - `Occlusion.ts`: stage 3. `apply(material)` adds the occlusion test to any built-in material.
-  - `DepthView.ts`: the debug views (_Depth only_, _Holes & people_, _People matte_).
+  - `Occlusion.ts`: stage 2. `apply(material)` adds the occlusion test to any built-in material.
+  - `DepthView.ts`: the debug views (_Depth only_, _People overlay_, _People matte_).
   - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
@@ -265,3 +256,7 @@ Tried, and removed because their gain didn't justify their complexity. They're i
   `default-planes.json`), and a _Ground_ view showed in green what the test let through. Its cost: the bottoms of shoes
   and wheels no longer hid a plane on the ground. To look at it again: `git show 7d6c7d3:web/src/Ground.ts`, the ground
   test in `Occlusion.ts`, and the `ground` flag in `Plane.ts`, `Recordings.ts` and `default-planes.json` at that commit.
+- **Holes stage** (last in commit `0fb81bb`, in `web/src/Occluder.ts`): on the page, an unknown depth pixel more than
+  half surrounded by known depth, within a radius (2 px by default, up to 6), took their mean depth, so virtual content
+  didn't show through gaps in real objects. It was in the Occluder's pass, with a _Holes_ folder (on/off, radius), and
+  the debug view showed filled holes in yellow. The ZED SDK's own fill (_ZED depth › fill holes_) is still there.

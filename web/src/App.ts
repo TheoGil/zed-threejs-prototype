@@ -53,7 +53,6 @@ export class App {
     this.depthView = new DepthView(this.occluder, this.feed, this.people, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.people.addControls(this.debug, this.bridge);
-    this.occluder.addControls(this.debug);
     this.occlusion.addControls(this.debug);
     this.detections.addControls(this.debug, this.bridge);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
