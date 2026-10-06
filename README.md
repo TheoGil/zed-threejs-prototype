@@ -9,12 +9,11 @@ virtual objects.
 ```mermaid
 flowchart LR
   zed["ZED camera / .svo"] --> bridge["bridge.py<br/>color · depth · people matte"]
-  bridge -- "WebSocket" --> bg
+  bridge -- "WebSocket" --> people
   subgraph page["Page (web/): which real depth hides virtual content, per pixel"]
-    bg["1 · Background<br/>live or background depth"] --> people["2 · People<br/>matte shape, person depth"]
-    people --> holes["3 · Holes<br/>fill gaps in foreground"]
-    holes --> ground["4 · Ground<br/>road never occludes"]
-    ground --> test["5 · Occlusion test<br/>bias · soft edges"]
+    people["1 · People<br/>matte shape, person depth"] --> holes["2 · Holes<br/>fill gaps in depth"]
+    holes --> ground["3 · Ground<br/>road never occludes"]
+    ground --> test["4 · Occlusion test<br/>bias · soft edges"]
   end
   test --> out["Composite"]
 ```
@@ -23,62 +22,44 @@ flowchart LR
 
 - the left color image (1280×720 JPEG);
 - the depth map (640×360 or 1280×720, in millimeters);
-- with matting on, the people's alpha matte, computed by Robust Video Matting (`matting.py`).
+- with matting on, the people's alpha matte, computed by Robust Video Matting (`matting.py`);
+- with detection on, the objects the ZED SDK detects (see Objects below; not part of occlusion).
 
-**The page** works out, for every pixel, the real depth that should hide virtual content. Stages 1–3 run as two
-GPU passes (`Occluder.ts`), and stages 4–5 run inside the virtual materials (`Occlusion.ts`).
+**The page** works out, for every pixel, the real depth that should hide virtual content. Stages 1–2 run as one GPU
+pass (`Occluder.ts`), and stages 3–4 run inside the virtual materials (`Occlusion.ts`).
 
 The pane's folders follow the same order, and each one starts with its on/off toggle: turn stages off one by one
 to see what each contributes. The **Video › view** dropdown has a debug view for most stages.
 
-### 1 · Background: live or background depth
+### 1 · People: shape from the matte, order from depth
 
-- **Problem:** raw stereo depth is noisy and flickers, has holes, and spreads foreground objects outward (a "halo").
-- **How:** a captured _background_ (the empty set) replaces the live depth wherever nothing stands in front of it. A
-  pixel uses the live depth only where it is clearly **closer** than the background (someone in front), or clearly
-  **farther** (something that was there has left, like a car that drove off). Everywhere else, the background's
-  clean depth is used.
-- **Controls** (_Background_):
-  - **use background**: turns the stage on or off, to compare.
-  - **Capture background** records the next **capture (s)** seconds (it plays even when paused) and takes the
-    per-pixel median of their depth and color, so people passing through drop out. Capture an empty scene, or a quiet
-    moment of a recording. It's saved in `backgrounds/<scene>.npz`, reloaded when that scene opens, and survives
-    restarts; **captured** shows when. Recapture whenever the camera moves.
-  - **fg margin (m)** and **fg margin (%)**: how much closer or farther counts as "clearly": the larger of the two, the
-    percentage being of the background's distance (stereo noise grows with distance).
-  - **color test** also requires the live color to differ from the background's (another hue, brighter, or much darker
-    than a shadow). This removes most halos and the false foreground on noisy edges. **color tolerance** sets how different.
-- **See it:** _Foreground_ view: red is in front of the background, blue is where the background is stale.
-- **Limits:** something left in place during the capture becomes background. It still occludes, with clean depth.
-
-### 2 · People: shape from the matte, order from depth
-
-- **Problem:** depth gets people's outlines wrong: holes, blocky edges, halos.
-- **How:** the bridge cuts people out of the video with Robust Video Matting. A person is taken out of the depth (what's
-  behind them counts as background) and gets a _person depth_ from the depth pixels inside their matte. A person hides
-  virtual content behind them with the matte's alpha as coverage, so their edges are as soft as the matte's (hair,
-  hands). Next to a person, depth at about their depth is their halo, and falls back to the background. Everything that
-  isn't a person (props, furniture) still goes through stages 1 and 3.
+- **Problem:** depth gets people's outlines wrong: holes, blocky edges, halos (stereo depth spreads foreground outward).
+- **How:** the bridge cuts people out of the video with Robust Video Matting. A person is taken out of the depth and gets
+  a _person depth_ from the depth pixels inside their matte. A person hides virtual content behind them with the
+  matte's alpha as coverage, so their edges are as soft as the matte's (hair, hands). Next to a person, depth at about
+  their depth is their halo, and is taken out too. Everything that isn't a person (props, furniture) occludes with its
+  live depth.
 - **Controls** (_People_):
   - **use matte**: the page uses the matte, or ignores it, to compare.
   - **status**: _on_, _off_, or _unavailable_ when ONNX Runtime or the model is missing (the bridge prints why).
   - **matting (bridge)**: the bridge computes the matte, about 12 ms per frame at 640×360 on an RTX 3060 laptop GPU.
   - **matting input**: the size of the image RVM gets; 1280×720 gives sharper edges, at about twice the cost.
   - **matting ratio**: the share of that size RVM works at internally. Higher finds smaller (farther) people, but is slower.
-- **See it:** the _People matte_ view shows the raw matte (white = person); the _Foreground_ view shows people in magenta.
+- **See it:** the _People matte_ view shows the raw matte (white = person); the _Holes & people_ view shows people in
+  magenta.
 - **Limits:** RVM is made for video where people are the main subject, so it misses small or distant people (under
   about 100 px tall). Where feet meet a plane on the ground, their depths are too close to tell which is in front, so the
   plane may draw over shoes. RVM is licensed under the GPL-3.0.
 
-### 3 · Holes: fill gaps in the foreground
+### 2 · Holes: fill gaps in depth
 
-- **Problem:** a foreground object's depth has gaps (unknown depth, or a color too close to the background's for the
-  color test), and the virtual content shows through them.
-- **How:** a pixel more than half surrounded by foreground, within **hole fill (px)**, takes its neighbors' depth.
+- **Problem:** the depth has gaps (unknown depth), and the virtual content shows through them.
+- **How:** an unknown pixel more than half surrounded by known depth, within **hole fill (px)**, takes its neighbors'
+  mean depth.
 - **Controls** (_Holes_): **fill holes** (on/off) and **hole fill (px)**.
-- **See it:** _Foreground_ view: filled holes are yellow.
+- **See it:** _Holes & people_ view: filled holes are yellow.
 
-### 4 · Ground: the road never occludes
+### 3 · Ground: the road never occludes
 
 - **Problem:** the ground's own depth noise hides virtual content lying on it (a plane on the road gets eaten in patches).
 - **How:** a real point less than the **ground margin** above the recording's ground plane never hides anything. The
@@ -87,9 +68,9 @@ to see what each contributes. The **Video › view** dropdown has a debug view f
 - **See it:** _Ground_ view: green is within the margin and never occludes. The road should be green, people and objects not.
 - **Limits:** within the margin, the bottom of shoes and wheels no longer hides a plane on the ground.
 
-### 5 · Occlusion test
+### 4 · Occlusion test
 
-- **How:** a virtual fragment is hidden where the real depth (from stages 1–4) is closer than it by more than the
+- **How:** a virtual fragment is hidden where the real depth (from stages 1–3) is closer than it by more than the
   **bias**. With **soft edges**, the test runs against the 4 nearest depth pixels and blends their answers by distance,
   so the stair-steps of the low-resolution depth become smooth slopes, at the same place. Transparent materials fade
   through their opacity; opaque ones use alpha-to-coverage, with the renderer's antialiasing.
@@ -144,14 +125,12 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Bridge.ts`: the WebSocket to `bridge.py`, the protocol types, and the playback controls.
   - `Feed.ts`: the latest frame as textures (video, depth in meters, matte), plus `sampleDepth()`.
   - `ZedSettings.ts`: the _ZED depth_ controls.
-  - `Background.ts`: stage 1. The captured background, its controls, and the shader functions that compare the
-    live depth with it.
-  - `People.ts`: stage 2's matte, from the bridge, and the _People_ controls.
-  - `Occluder.ts`: stages 1–3 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
+  - `People.ts`: stage 1's matte, from the bridge, and the _People_ controls.
+  - `Occluder.ts`: stages 1–2 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
-  - `Ground.ts`: stage 4. The active recording's ground plane.
-  - `Occlusion.ts`: stage 5. `apply(material)` adds the occlusion test to any built-in material.
-  - `DepthView.ts`: the debug views (_Depth only_, _Ground_, _Foreground_, _People matte_).
+  - `Ground.ts`: stage 3. The active recording's ground plane.
+  - `Occlusion.ts`: stage 4. `apply(material)` adds the occlusion test to any built-in material.
+  - `DepthView.ts`: the debug views (_Depth only_, _Ground_, _Holes & people_, _People matte_).
   - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
@@ -260,7 +239,7 @@ What the experience needs to run in real time, from measurements on the prototyp
 | ------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | GPU     | NVIDIA RTX 4070 Ti / 4080 or better (or the 50-series equivalent), 12–16 GB of video memory | ZED depth requires an NVIDIA GPU (CUDA). Depth, people matting and rendering all share it.                        |
 | CPU     | Recent Intel Core i7/i9 or AMD Ryzen 7/9, high single-core speed                            | The bridge's loop is single-threaded Python (JPEG encoding, depth conversion, sending).                           |
-| RAM     | 32 GB                                                                                       | ZED, the browser and background capture.                                                                          |
+| RAM     | 32 GB                                                                                       | ZED, the AI models and the browser.                                                                               |
 | Storage | NVMe SSD                                                                                    | The AI models load at launch.                                                                                     |
 | USB     | Native USB 3 port, on the motherboard                                                       | The ZED 2i needs USB 3 bandwidth. If the camera is far from the PC, use an active or fiber-optic USB 3 extension. |
 | OS      | Windows 11                                                                                  | Matches the prototype (DirectML matting, setup steps above).                                                      |
@@ -273,11 +252,24 @@ Measured per frame on the prototype laptop, for reference:
 - ZED NEURAL depth: about 24 ms on recordings (a live camera skips video decoding).
 - People matting (RVM, 640×360 input): about 12 ms.
 - Object detection (multi-class fast): about 10 ms.
-- Browser passes (the Occluder's two passes, the occlusion test): no measurable cost.
+- Browser passes (the Occluder's pass, the occlusion test): no measurable cost.
 
 Before the event:
 
 - Install the same versions as the prototype: ZED SDK 5.5, Python 3.10, Node.js.
 - Let the first run download and optimize the AI models (several minutes each).
 - Run the full experience for a few hours to check temperatures and frame rate.
-- Recapture the background on site, with the final camera position and lighting.
+- Place the ground plane on site, with the final camera position.
+
+## Parked ideas
+
+Tried, and removed because their gain didn't justify their complexity. They're in the git history, to come back to.
+
+- **Background stage** (last in commit `f787fb8`): the bridge captured the empty set (the per-pixel median of a few
+  seconds of depth and color, saved in `backgrounds/<scene>.npz`), and the page used its clean depth wherever nothing
+  stood clearly in front of it, or clearly behind it (something that left). An optional color test told shadows from
+  objects. It removed flicker and halos on static parts of the scene, but the final render barely improved. To look at
+  it again: `git show f787fb8:web/src/Background.ts` and `git show f787fb8:bridge.py` (`Capture`, `Background`), and
+  this README at that commit. Backgrounds already captured are still in `backgrounds/`.
+- **Temporal filter and edge snap** (last in commit `47169b9`, in `web/src/DepthFilter.ts`): the occluder depth was
+  smoothed over time (a pixel had to stay foreground for a few frames), and its edges snapped to the video's color edges.

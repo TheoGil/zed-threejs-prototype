@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { Background } from "./Background";
 import { Bridge, type StreamInfo } from "./Bridge";
 import { Debug } from "./Debug";
 import { DepthView } from "./DepthView";
@@ -24,9 +23,8 @@ export class App {
   private readonly status = new Status();
   private readonly feed = new Feed();
   private readonly ground = new Ground();
-  private readonly background = new Background(this.feed);
   private readonly people = new People(this.feed);
-  private readonly occluder = new Occluder(this.background, this.people);
+  private readonly occluder = new Occluder(this.feed, this.people);
   private readonly detections = new Detections();
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
@@ -50,14 +48,12 @@ export class App {
           this.feed.update(frame);
           this.detections.update(frame.objects);
         },
-        onBackground: (frame) => this.background.set(frame, this.bridge.info!.background!),
       },
       this.status,
       this.debug,
     );
-    this.depthView = new DepthView(this.occluder, this.background, this.people, this.camera, this.ground, this.debug);
+    this.depthView = new DepthView(this.occluder, this.feed, this.people, this.camera, this.ground, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
-    this.background.addControls(this.debug, this.bridge);
     this.people.addControls(this.debug, this.bridge);
     this.occluder.addControls(this.debug);
     this.ground.addControls(this.debug);
@@ -76,7 +72,7 @@ export class App {
     this.renderer.setAnimationLoop(() => this.render());
   }
 
-  // On connect and after each scene switch, depth settings change or background capture:
+  // On connect and after each scene switch or settings change:
   // the intrinsics or the depth size may have changed, so the camera re-aligns and the textures resize.
   private onInfo(info: StreamInfo) {
     this.camera.setIntrinsics(info);
@@ -84,7 +80,6 @@ export class App {
     this.occluder.setSize(info.depthWidth, info.depthHeight);
     this.resize();
     this.zedSettings.sync(info.depth);
-    this.background.sync(info.background);
     this.people.sync(info.matting);
     this.detections.sync(info.detection);
     this.planeTool.setRecording(this.recordings.activate(info.scene));

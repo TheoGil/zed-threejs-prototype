@@ -9,8 +9,8 @@ import type { DepthSettings } from "./ZedSettings";
 const WS_URL =
   new URLSearchParams(location.search).get("ws") ?? "ws://localhost:8765";
 
-// Sent by the bridge on connect and after each scene switch, depth, matting or detection
-// settings change or background capture (see bridge.py).
+// Sent by the bridge on connect and after each scene switch or depth, matting or detection
+// settings change (see bridge.py).
 export interface StreamInfo {
   width: number; // color image size, in pixels
   height: number;
@@ -23,16 +23,8 @@ export interface StreamInfo {
   scenes: string[]; // every scene the bridge can play
   scene: string; // the one playing
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
-  background: BackgroundInfo | null; // the scene's captured background, if any
   matting: MattingInfo; // people matting in the bridge
   detection: DetectionInfo; // ZED SDK object detection in the bridge
-}
-
-export interface BackgroundInfo {
-  depthWidth: number; // its depth map size, in pixels
-  depthHeight: number;
-  capturedAt: string; // local time, ISO 8601
-  frames: number; // how many frames its median was taken over
 }
 
 export interface Frame {
@@ -45,17 +37,15 @@ export interface Frame {
 interface Handlers {
   onInfo: (info: StreamInfo) => void;
   onFrame: (frame: Frame) => void;
-  onBackground: (background: Frame) => void; // sent after an info whose `background` describes it
 }
 
 // Binary message kinds: the first byte of their 2-byte header. Flags: the second byte.
 const FRAME = 0;
-const BACKGROUND = 1;
 const HAS_MATTE = 1;
 const HAS_OBJECTS = 2;
 const HEADER_BYTES = 2;
 
-// The connection to bridge.py. Receives the stream info, the frames and the background,
+// The connection to bridge.py. Receives the stream info and the frames,
 // and sends play/pause, speed, scene switches and the other modules' requests. Playback is driven by the bridge; the page
 // only tells it what it wants.
 export class Bridge {
@@ -161,20 +151,14 @@ export class Bridge {
 
   private async onBinary(buffer: ArrayBuffer) {
     const kind = new Uint8Array(buffer, 0, 1)[0];
+    if (kind !== FRAME || this.decoding) return; // drop frames rather than queue them up
     const info = this.info!;
-    if (kind === BACKGROUND && info.background) {
-      const { depthWidth, depthHeight } = info.background;
-      const background = await decode(buffer, depthWidth, depthHeight);
-      if (background) this.handlers.onBackground(background);
-    } else if (kind === FRAME) {
-      if (this.decoding) return; // drop frames rather than queue them up
-      this.decoding = true;
-      const frame = await decode(buffer, info.depthWidth, info.depthHeight);
-      this.decoding = false;
-      if (!frame) return;
-      this.handlers.onFrame(frame);
-      this.frames++;
-    }
+    this.decoding = true;
+    const frame = await decode(buffer, info.depthWidth, info.depthHeight);
+    this.decoding = false;
+    if (!frame) return;
+    this.handlers.onFrame(frame);
+    this.frames++;
   }
 
   private updateStatus() {
@@ -185,7 +169,7 @@ export class Bridge {
   }
 }
 
-// A frame or background message: [header][depth: uint16 mm]([objects length: uint32][objects: JSON])
+// A frame message: [header][depth: uint16 mm]([objects length: uint32][objects: JSON])
 // ([matte length: uint32][matte: JPEG])[color: JPEG]. null if a JPEG is broken.
 async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
   const flags = new Uint8Array(buffer, 1, 1)[0];
