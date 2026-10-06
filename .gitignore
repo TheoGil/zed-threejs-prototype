@@ -27,3 +27,6 @@ desktop.ini
 
 # Captured backgrounds: per camera setup, captured from the page
 backgrounds/
+
+# Neural network models, downloaded (see matting.py)
+models/

@@ -1,5 +1,6 @@
 import type { BladeApi, FolderApi } from "tweakpane";
 import type { Debug } from "./Debug";
+import type { MattingInfo } from "./People";
 import type { Status } from "./Status";
 import type { DepthSettings } from "./ZedSettings";
 
@@ -7,8 +8,8 @@ import type { DepthSettings } from "./ZedSettings";
 const WS_URL =
   new URLSearchParams(location.search).get("ws") ?? "ws://localhost:8765";
 
-// Sent by the bridge on connect and after each scene switch, depth settings change or
-// background capture (see bridge.py).
+// Sent by the bridge on connect and after each scene switch, depth or matting settings
+// change or background capture (see bridge.py).
 export interface StreamInfo {
   width: number; // color image size, in pixels
   height: number;
@@ -22,6 +23,7 @@ export interface StreamInfo {
   scene: string; // the one playing
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
   background: BackgroundInfo | null; // the scene's captured background, if any
+  matting: MattingInfo; // people matting in the bridge
 }
 
 export interface BackgroundInfo {
@@ -34,6 +36,7 @@ export interface BackgroundInfo {
 export interface Frame {
   image: HTMLImageElement;
   depthMm: Uint16Array; // depthWidth * depthHeight, millimeters, 0 = invalid
+  matte: HTMLImageElement | null; // people's alpha matte, video size (white = person), when matting is on
 }
 
 interface Handlers {
@@ -42,9 +45,10 @@ interface Handlers {
   onBackground: (background: Frame) => void; // sent after an info whose `background` describes it
 }
 
-// Binary message kinds: the first byte of their 2-byte header.
+// Binary message kinds: the first byte of their 2-byte header. Flags: the second byte.
 const FRAME = 0;
 const BACKGROUND = 1;
+const HAS_MATTE = 1;
 const HEADER_BYTES = 2;
 
 // The connection to bridge.py. Receives the stream info, the frames and the background,
@@ -177,19 +181,38 @@ export class Bridge {
   }
 }
 
-// A frame or background message: [header][depth: uint16 mm][color: JPEG]. null if the JPEG is broken.
+// A frame or background message: [header][depth: uint16 mm]([matte length: uint32][matte: JPEG])
+// [color: JPEG]. null if a JPEG is broken.
 async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
+  const flags = new Uint8Array(buffer, 1, 1)[0];
+  let offset = HEADER_BYTES;
   const depthCount = depthWidth * depthHeight;
-  const depthMm = new Uint16Array(buffer, HEADER_BYTES, depthCount);
-  const jpeg = new Blob([new Uint8Array(buffer, HEADER_BYTES + depthCount * 2)], { type: "image/jpeg" });
-  const url = URL.createObjectURL(jpeg);
+  const depthMm = new Uint16Array(buffer, offset, depthCount);
+  offset += depthCount * 2;
+  let matteJpeg: Uint8Array<ArrayBuffer> | null = null;
+  if (flags & HAS_MATTE) {
+    const length = new DataView(buffer, offset, 4).getUint32(0, true);
+    matteJpeg = new Uint8Array(buffer, offset + 4, length);
+    offset += 4 + length;
+  }
+  try {
+    const [image, matte] = await Promise.all([
+      decodeJpeg(new Uint8Array(buffer, offset)),
+      matteJpeg ? decodeJpeg(matteJpeg) : null,
+    ]);
+    return { image, depthMm, matte };
+  } catch {
+    return null;
+  }
+}
+
+async function decodeJpeg(bytes: Uint8Array<ArrayBuffer>): Promise<HTMLImageElement> {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
   const image = new Image();
   image.src = url;
   try {
     await image.decode();
-    return { image, depthMm };
-  } catch {
-    return null;
+    return image;
   } finally {
     URL.revokeObjectURL(url);
   }

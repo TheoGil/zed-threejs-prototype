@@ -5,9 +5,13 @@ import type { Frame } from "./Bridge";
 // past the camera's far plane, so it never occludes.
 const TOO_FAR = 65;
 
-// The latest frame from the bridge, as textures: the color video and the real-world depth.
+// The latest frame from the bridge, as textures: the color video, the real-world depth,
+// and people's alpha matte when the bridge sends one.
 export class Feed {
   readonly video = new THREE.Texture();
+  // White = person, at video size. Linear data: no color space. hasMatte: whether the last frame had one.
+  readonly matte = new THREE.Texture();
+  readonly hasMatte = { value: false };
   // Depth in meters, 0 = unknown, 65.535 = too far. Shared as a uniform, so the materials
   // that use it follow when the texture is replaced for a new size.
   readonly depth: { value: THREE.DataTexture | null } = { value: null };
@@ -36,11 +40,16 @@ export class Feed {
   }
 
   // Updates color and depth together so they stay in sync.
-  update({ image, depthMm }: Frame) {
+  update({ image, depthMm, matte }: Frame) {
     // A frame decoded while the depth size changed belongs to the old size: skip it.
     if (depthMm.length !== this.depthData.length) return;
     this.video.image = image;
     this.video.needsUpdate = true;
+    this.hasMatte.value = !!matte;
+    if (matte) {
+      this.matte.image = matte;
+      this.matte.needsUpdate = true;
+    }
     const depth = this.depthData;
     for (let i = 0; i < depth.length; i++) depth[i] = depthMm[i] * 0.001;
     this.depth.value!.needsUpdate = true;

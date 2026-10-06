@@ -8,22 +8,26 @@ and streams them to the browser. The page can switch between scenes.
     python bridge.py --live               # add the live camera to the scenes
 
 Protocol (ws://localhost:8765):
-  1. On connect, and again after each scene switch, depth settings change or background
-     capture, one JSON text message with the image and depth sizes, intrinsics, the list
-     of scenes, the current scene, the depth settings and the background's description.
-  2. Binary messages, each starting with a 2-byte header [kind, 0]:
+  1. On connect, and again after each scene switch, depth or matting settings change or
+     background capture, one JSON text message with the image and depth sizes, intrinsics,
+     the list of scenes, the current scene, the depth and matting settings and the
+     background's description.
+  2. Binary messages, each starting with a 2-byte header [kind, flags]:
        kind 0, a frame (one per frame):
          [depth: depthWidth*depthHeight uint16 little-endian, millimeters,
                  0 = unknown, 65535 = too far (beyond the ZED's range)]
+         if flags & HAS_MATTE: [matte length: uint32 little-endian]
+                               [people's alpha matte: grayscale JPEG, video size, 255 = person]
          [color: JPEG bytes, until end of message]
-       kind 1, the scene's background, same layout, with the size given by the info's
-         "background". Sent on connect, after a scene switch and after a capture.
+       kind 1, the scene's background, same layout (never with a matte), with the size given
+         by the info's "background". Sent on connect, after a scene switch and after a capture.
   Browser -> bridge:
      {"type": "control", "playing": bool, "speed": float}
        (speed only applies to SVO sources; a live camera runs at its own rate)
      {"type": "scene", "name": str}
      {"type": "depth", "settings": {...}}   any subset of DEPTH_SETTINGS
      {"type": "capture", "seconds": float}  capture the background from the next frames
+     {"type": "matting", "settings": {...}}  any subset of MATTING_SETTINGS
 """
 
 import asyncio
@@ -38,6 +42,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import websockets
+
+from matting import Matting
 
 PORT = 8765
 IMG_W, IMG_H = 1280, 720
@@ -59,8 +65,18 @@ REOPEN_SETTINGS = {"mode", "stabilization"}
 DEPTH_MODES = ["NEURAL_LIGHT", "NEURAL", "NEURAL_PLUS"]  # fastest to sharpest
 DEPTH_RESOLUTIONS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 
-# Binary message kinds (the first byte of the 2-byte header).
+# People matting (see matting.py), which the page can change; applies from the next frame.
+MATTING_SETTINGS = dict(
+    enabled=True,
+    input="640x360",  # the size of the image RVM gets, one of MATTING_INPUTS: smaller is faster, softer edges
+    ratio=0.5,  # the share of that size RVM works at internally: higher finds smaller people, slower
+)
+MATTING_INPUTS = {"640x360": (640, 360), "1280x720": (1280, 720)}
+MATTE_JPEG_QUALITY = 90
+
+# Binary message kinds (the first byte of the 2-byte header), and flags (the second).
 FRAME, BACKGROUND = 0, 1
+HAS_MATTE = 1
 # Depth beyond the ZED's range (+inf from the SDK), sent as the largest uint16: "nothing within
 # range here" never occludes, unlike an unknown pixel (0). The page reads it as 65.535 m.
 TOO_FAR_MM = 65535
@@ -72,14 +88,19 @@ MIN_VALID_SHARE = 0.25
 BACKGROUND_DIR = Path(__file__).parent / "backgrounds"
 
 
-def encode_frame(kind, bgr, depth_m):
+def encode_frame(kind, bgr, depth_m, matte=None):
     """kind: FRAME or BACKGROUND, bgr: HxWx3 uint8, depth_m: float32 meters
-    (+inf = too far, NaN/-inf/0 = unknown)."""
+    (+inf = too far, NaN/-inf/0 = unknown), matte: HxW uint8 or None."""
     mm = np.nan_to_num(depth_m, nan=0.0, posinf=TOO_FAR_MM / 1000, neginf=0.0) * 1000.0
     mm = np.clip(mm, 0, TOO_FAR_MM).astype("<u2")
     ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     # 2 bytes keep the depth aligned for a Uint16Array on the page.
-    return bytes([kind, 0]) + mm.tobytes() + jpeg.tobytes()
+    if matte is None:
+        return bytes([kind, 0]) + mm.tobytes() + jpeg.tobytes()
+    # A grayscale JPEG: a few dozen KB instead of about 900 KB raw, without the cost of compressing it losslessly.
+    ok, matte_jpeg = cv2.imencode(".jpg", matte, [cv2.IMWRITE_JPEG_QUALITY, MATTE_JPEG_QUALITY])
+    length = len(matte_jpeg).to_bytes(4, "little")
+    return bytes([kind, HAS_MATTE]) + mm.tobytes() + length + matte_jpeg.tobytes() + jpeg.tobytes()
 
 
 class Capture:
@@ -153,6 +174,18 @@ class Background:
 
     def message(self):
         return encode_frame(BACKGROUND, self.bgr, self.depth_m)
+
+
+def update_matting_settings(settings, changes):
+    """`settings` with the valid entries of `changes` (from the page) applied."""
+    settings = dict(settings)
+    if "enabled" in changes:
+        settings["enabled"] = bool(changes["enabled"])
+    if "ratio" in changes:
+        settings["ratio"] = min(max(float(changes["ratio"]), 0.1), 1.0)
+    if changes.get("input") in MATTING_INPUTS:
+        settings["input"] = changes["input"]
+    return settings
 
 
 def update_depth_settings(settings, changes):
@@ -265,6 +298,12 @@ async def main():
     source = scenes[scene](depth_settings)
     background = Background.load(scene)
     capture = None
+    try:
+        matting = Matting()
+    except RuntimeError as e:
+        print(f"People matting unavailable: {e}")
+        matting = None
+    matting_settings = dict(MATTING_SETTINGS)
 
     def make_info():
         depth_w, depth_h = source.depth_size
@@ -272,6 +311,7 @@ async def main():
             width=IMG_W, height=IMG_H, depthWidth=depth_w, depthHeight=depth_h, **source.intrinsics,
             scenes=list(scenes), scene=scene, depth=depth_settings,
             background=background.info() if background else None,
+            matting=dict(available=matting is not None, **matting_settings),
         ))
 
     info = make_info()
@@ -283,7 +323,7 @@ async def main():
     requested_capture = None  # seconds
 
     async def handler(ws):
-        nonlocal requested_scene, requested_depth, requested_capture
+        nonlocal requested_scene, requested_depth, requested_capture, matting_settings, info
         # Queued without waiting, like the frames: awaiting a send waits for the connection to
         # drain, which the frames broadcast meanwhile can keep from ever happening, and then this
         # handler would never read the page's messages. The page gets the info before any frame.
@@ -305,12 +345,24 @@ async def main():
                     )
                 elif msg.get("type") == "capture":
                     requested_capture = min(max(float(msg.get("seconds", 5)), 0.5), 30)
+                elif msg.get("type") == "matting":
+                    matting_settings = update_matting_settings(matting_settings, msg.get("settings", {}))
+                    info = make_info()
+                    websockets.broadcast(clients, info)
         finally:
             clients.discard(ws)
 
     def send_frame(frame):
         if frame:
-            message = encode_frame(FRAME, *frame)
+            bgr, depth_m = frame
+            matte = None
+            if matting and matting_settings["enabled"]:
+                size = MATTING_INPUTS[matting_settings["input"]]
+                small = bgr if size == (IMG_W, IMG_H) else cv2.resize(bgr, size, interpolation=cv2.INTER_AREA)
+                matte = matting.run(small, matting_settings["ratio"])
+                if size != (IMG_W, IMG_H):
+                    matte = cv2.resize(matte, (IMG_W, IMG_H), interpolation=cv2.INTER_LINEAR)
+            message = encode_frame(FRAME, bgr, depth_m, matte)
             # Skip pages that haven't taken the previous frame yet (e.g. a hidden tab):
             # queuing frames for them slows the bridge down for everyone.
             ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(message)]
@@ -350,6 +402,8 @@ async def main():
                         source = scenes[scene](depth_settings)  # fall back to what we had
                     source.seek(position)
                     background = Background.load(scene)
+                    if matting:
+                        matting.reset()
                 else:
                     source.set_depth_settings(settings)
                     depth_settings = settings

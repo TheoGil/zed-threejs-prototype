@@ -1,3 +1,4 @@
 websockets
 numpy
 opencv-python
+onnxruntime-directml
