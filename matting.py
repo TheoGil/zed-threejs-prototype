@@ -38,10 +38,15 @@ class Matting:
     def reset(self):
         """Forget the previous frames, e.g. after a scene switch."""
         self.states = [np.zeros((1, 1, 1, 1), np.float32)] * 4
+        self.shape = None  # the frame size and ratio the states were computed for
 
     def run(self, bgr, ratio):
         """The alpha matte of `bgr` (HxWx3 uint8), HxW uint8 (255 = person).
         `ratio`: the share of the frame's resolution RVM works at internally."""
+        # The memory's size follows the size RVM works at: start over when that changes.
+        if (bgr.shape, ratio) != self.shape:
+            self.reset()
+            self.shape = (bgr.shape, ratio)
         src = cv2.dnn.blobFromImage(bgr, 1 / 255, swapRB=True)  # RGB, NCHW, 0..1, float32
         fgr, pha, *self.states = self.session.run(
             None,
