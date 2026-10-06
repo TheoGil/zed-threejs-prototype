@@ -1,4 +1,4 @@
-import type { BladeApi, FolderApi } from "tweakpane";
+import type { BladeApi, ButtonApi, FolderApi } from "tweakpane";
 import type { Debug } from "./Debug";
 import type { DetectedObject, DetectionInfo } from "./Detections";
 import type { MattingInfo } from "./People";
@@ -22,12 +22,14 @@ export interface StreamInfo {
   cy: number;
   scenes: string[]; // every scene the bridge can play
   scene: string; // the one playing
+  fps: number | null; // its frame rate, null for a live camera
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
   matting: MattingInfo; // people matting in the bridge
   detection: DetectionInfo; // ZED SDK object detection in the bridge
 }
 
 export interface Frame {
+  position: number | null; // the frame's number in the SVO, null for a live camera
   image: HTMLImageElement;
   depthMm: Uint16Array; // depthWidth * depthHeight, millimeters, 0 = invalid
   matte: HTMLImageElement | null; // people's alpha matte, video size (white = person), when matting is on
@@ -40,20 +42,25 @@ export interface Frame {
 interface Handlers {
   onInfo: (info: StreamInfo) => void;
   onFrame: (frame: Frame) => void;
+  onPause: (position: number | null) => void; // the Pause button, with the frame shown
 }
 
-// Binary message kinds: the first byte of their 2-byte header. Flags: the second byte.
+// Binary message kinds: the first byte of their header. Flags: the second byte. Then the frame's
+// position in the SVO (uint32, NO_POSITION for a live camera).
 const FRAME = 0;
 const HAS_MATTE = 1;
 const HAS_OBJECTS = 2;
 const HAS_OBJECT_MASKS = 4;
-const HEADER_BYTES = 2;
+const NO_POSITION = 0xffffffff;
+const HEADER_BYTES = 6;
 
 // The connection to bridge.py. Receives the stream info and the frames,
 // and sends play/pause, speed, scene switches and the other modules' requests. Playback is driven by the bridge; the page
 // only tells it what it wants.
 export class Bridge {
   info: StreamInfo | null = null;
+  readonly playButton: ButtonApi | null = null;
+  private position: number | null = null; // of the last frame shown
   private readonly playback = { scene: "", playing: true, speed: 1 };
   private socket: WebSocket | null = null;
   private decoding = false;
@@ -70,11 +77,9 @@ export class Bridge {
   ) {
     this.ui = debug.folder("Video");
     if (this.ui) {
-      const playButton = this.ui.addButton({ title: "Pause" });
-      playButton.on("click", () => {
-        this.playback.playing = !this.playback.playing;
-        playButton.title = this.playback.playing ? "Pause" : "Play";
-        this.sendControl();
+      this.playButton = this.ui.addButton({ title: "Pause" }).on("click", () => {
+        if (this.playback.playing) this.handlers.onPause(this.pause());
+        else this.play();
       });
       this.ui
         .addBinding(this.playback, "speed", { min: 0.1, max: 2, step: 0.05 })
@@ -88,6 +93,22 @@ export class Bridge {
   requestScene(name: string) {
     if (name === this.info?.scene) return;
     if (this.send({ type: "scene", name })) this.waitForInfo(`loading ${name}…`);
+  }
+
+  // Pauses on SVO frame `position`, or by default on the frame shown: the bridge shows it again,
+  // in case it had already sent the next one. Returns the frame paused on.
+  pause(position = this.position): number | null {
+    this.playback.playing = false;
+    if (this.playButton) this.playButton.title = "Play";
+    this.sendControl();
+    if (position !== null) this.send({ type: "seek", position });
+    return position;
+  }
+
+  private play() {
+    this.playback.playing = true;
+    if (this.playButton) this.playButton.title = "Pause";
+    this.sendControl();
   }
 
   // Sends a message to the bridge; false if it isn't connected.
@@ -161,6 +182,7 @@ export class Bridge {
     const frame = await decode(buffer, info.depthWidth, info.depthHeight);
     this.decoding = false;
     if (!frame) return;
+    this.position = frame.position;
     this.handlers.onFrame(frame);
     this.frames++;
   }
@@ -173,11 +195,12 @@ export class Bridge {
   }
 }
 
-// A frame message: [header][depth: uint16 mm]([objects length: uint32][objects: JSON])
+// A frame message: [header][position: uint32][depth: uint16 mm]([objects length: uint32][objects: JSON])
 // ([masks length: uint32][objects' masks: PNG])([matte length: uint32][matte: JPEG])[color: JPEG].
 // null if an image is broken.
 async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
   const flags = new Uint8Array(buffer, 1, 1)[0];
+  const position = new DataView(buffer, 2, 4).getUint32(0, true);
   let offset = HEADER_BYTES;
   const depthCount = depthWidth * depthHeight;
   const depthMm = new Uint16Array(buffer, offset, depthCount);
@@ -206,7 +229,7 @@ async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: numb
       matteJpeg ? decodeImage(matteJpeg, "image/jpeg") : null,
       masksPng ? decodeImage(masksPng, "image/png") : null,
     ]);
-    return { image, depthMm, matte, objects, objectMasks };
+    return { position: position === NO_POSITION ? null : position, image, depthMm, matte, objects, objectMasks };
   } catch {
     return null;
   }

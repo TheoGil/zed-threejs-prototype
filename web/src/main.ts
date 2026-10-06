@@ -1,4 +1,6 @@
 import { App } from "./App";
 import { loadDefaultPlanes } from "./Recordings";
+import { loadTimestamps } from "./Timestamps";
 
-new App(await loadDefaultPlanes());
+const [planes, timestamps] = await Promise.all([loadDefaultPlanes(), loadTimestamps()]);
+new App(planes, timestamps);

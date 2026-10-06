@@ -10,9 +10,12 @@ and streams them to the browser. The page can switch between scenes.
 Protocol (ws://localhost:8765):
   1. On connect, and again after each scene switch or depth, matting or detection settings
      change, one JSON text message with the image and depth sizes, intrinsics, the list of
-     scenes, the current scene, and the depth, matting and detection settings.
+     scenes, the current scene, its frame rate (null for a live camera), and the depth,
+     matting and detection settings.
   2. Binary messages, each starting with a 2-byte header [kind, flags]:
        kind 0, a frame (one per frame):
+         [position: uint32 little-endian, the frame's number in the SVO, NO_POSITION for a
+                    live camera]
          [depth: depthWidth*depthHeight uint16 little-endian, millimeters,
                  0 = unknown, 65535 = too far (beyond the ZED's range)]
          if flags & HAS_OBJECTS: [objects length: uint32 little-endian]
@@ -28,6 +31,7 @@ Protocol (ws://localhost:8765):
      {"type": "control", "playing": bool, "speed": float}
        (speed only applies to SVO sources; a live camera runs at its own rate)
      {"type": "scene", "name": str}
+     {"type": "seek", "position": int}      show this SVO frame (playing on from it, if playing)
      {"type": "depth", "settings": {...}}   any subset of DEPTH_SETTINGS
      {"type": "matting", "settings": {...}}  any subset of MATTING_SETTINGS
      {"type": "detection", "settings": {...}}  any subset of DETECTION_SETTINGS
@@ -94,21 +98,23 @@ DETECTION_MODELS = [
 # Binary message kinds (the first byte of the 2-byte header), and flags (the second).
 FRAME = 0
 HAS_MATTE, HAS_OBJECTS, HAS_OBJECT_MASKS = 1, 2, 4
+NO_POSITION = 0xFFFFFFFF  # a live camera's frames have no SVO position
 # Depth beyond the ZED's range (+inf from the SDK), sent as the largest uint16: "nothing within
 # range here" never occludes, unlike an unknown pixel (0). The page reads it as 65.535 m.
 TOO_FAR_MM = 65535
 
 
-def encode_frame(bgr, depth_m, matte=None, objects=None, object_masks=None):
-    """bgr: HxWx3 uint8, depth_m: float32 meters
+def encode_frame(position, bgr, depth_m, matte=None, objects=None, object_masks=None):
+    """position: the frame's number in the SVO, or None (live camera), bgr: HxWx3 uint8, depth_m: float32 meters
     (+inf = too far, NaN/-inf/0 = unknown), matte: HxW uint8 or None,
     objects: a list of object_info() or None (detection off),
     object_masks: HxW uint8 (see ZedSource.detect) or None."""
     mm = np.nan_to_num(depth_m, nan=0.0, posinf=TOO_FAR_MM / 1000, neginf=0.0) * 1000.0
     mm = np.clip(mm, 0, TOO_FAR_MM).astype("<u2")
     ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    # 2 bytes keep the depth aligned for a Uint16Array on the page.
-    flags, parts = 0, [mm.tobytes()]
+    # 6 bytes before the depth keep it aligned for a Uint16Array on the page.
+    flags = 0
+    parts = [(NO_POSITION if position is None else position).to_bytes(4, "little"), mm.tobytes()]
     if objects is not None:
         flags |= HAS_OBJECTS
         data = json.dumps(objects, separators=(",", ":")).encode()
@@ -309,7 +315,7 @@ class ZedSource:
 
     def seek(self, position):
         if self.svo and position is not None:
-            self.cam.set_svo_position(position)
+            self.cam.set_svo_position(min(max(position, 0), self.cam.get_svo_number_of_frames() - 1))
 
     def regrab(self):
         """The last frame again (a new one for a live camera), e.g. with new settings while paused."""
@@ -375,7 +381,7 @@ async def main():
         depth_w, depth_h = source.depth_size
         return json.dumps(dict(
             width=IMG_W, height=IMG_H, depthWidth=depth_w, depthHeight=depth_h, **source.intrinsics,
-            scenes=list(scenes), scene=scene, depth=depth_settings,
+            scenes=list(scenes), scene=scene, fps=source.fps, depth=depth_settings,
             matting=dict(available=matting is not None, **matting_settings),
             detection=dict(error=detection_error, **detection_settings),
         ))
@@ -387,9 +393,10 @@ async def main():
     requested_scene = None
     requested_depth = None
     requested_detection = None
+    requested_seek = None  # SVO frame
 
     async def handler(ws):
-        nonlocal requested_scene, requested_depth, requested_detection, matting_settings, info
+        nonlocal requested_scene, requested_depth, requested_detection, requested_seek, matting_settings, info
         # Queued without waiting, like the frames: awaiting a send waits for the connection to
         # drain, which the frames broadcast meanwhile can keep from ever happening, and then this
         # handler would never read the page's messages. The page gets the info before any frame.
@@ -403,6 +410,8 @@ async def main():
                     playback["speed"] = min(max(float(msg.get("speed", 1.0)), 0.05), 4.0)
                 elif msg.get("type") == "scene" and msg.get("name") in scenes:
                     requested_scene = msg["name"]
+                elif msg.get("type") == "seek":
+                    requested_seek = int(msg.get("position", 0))
                 elif msg.get("type") == "depth":
                     requested_depth = update_depth_settings(
                         requested_depth or depth_settings, msg.get("settings", {})
@@ -434,7 +443,7 @@ async def main():
                 if size != (IMG_W, IMG_H):
                     matte = cv2.resize(matte, (IMG_W, IMG_H), interpolation=cv2.INTER_LINEAR)
                 matting_time += time.perf_counter() - start
-            message = encode_frame(bgr, depth_m, matte, objects, object_masks)
+            message = encode_frame(source.svo_position(), bgr, depth_m, matte, objects, object_masks)
             # Skip pages that haven't taken the previous frame yet (e.g. a hidden tab):
             # queuing frames for them slows the bridge down for everyone.
             ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(message)]
@@ -476,6 +485,15 @@ async def main():
                 # New intrinsics or depth size: the page re-aligns its camera and resizes its textures.
                 send_info()
                 send_frame(source.regrab())  # show the change right away, even when paused
+                next_frame = time.perf_counter()
+                await asyncio.sleep(0)
+
+            if requested_seek is not None:
+                source.seek(requested_seek)
+                requested_seek = None
+                if matting:
+                    matting.reset()  # its memory of past frames is from elsewhere in the video
+                send_frame(source.grab())  # the frame sought, even when paused
                 next_frame = time.perf_counter()
                 await asyncio.sleep(0)
 

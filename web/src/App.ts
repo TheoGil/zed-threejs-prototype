@@ -10,6 +10,7 @@ import { People } from "./People";
 import { PlaneTool } from "./PlaneTool";
 import { Recordings, type DefaultPlanes } from "./Recordings";
 import { Status } from "./Status";
+import { Timestamps, type DefaultTimestamps } from "./Timestamps";
 import { ZedCamera } from "./ZedCamera";
 import { ZedSettings } from "./ZedSettings";
 
@@ -30,10 +31,11 @@ export class App {
   private readonly depthView: DepthView;
   private readonly planeTool: PlaneTool;
   private readonly recordings: Recordings;
+  private readonly timestamps: Timestamps;
 
   // The order of the addControls() calls sets the order of the folders in the debug pane:
   // the inputs (video, ZED depth), the occlusion test, people, then the objects detected.
-  constructor(defaultPlanes: DefaultPlanes) {
+  constructor(defaultPlanes: DefaultPlanes, defaultTimestamps: DefaultTimestamps) {
     const canvas = this.renderer.domElement;
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(canvas);
@@ -47,10 +49,12 @@ export class App {
           this.detections.update(frame.objects);
           this.detections.setMasks(frame.objectMasks);
         },
+        onPause: (position) => this.timestamps.log(position),
       },
       this.status,
       this.debug,
     );
+    this.timestamps = new Timestamps(this.bridge, this.debug, defaultTimestamps);
     this.depthView = new DepthView(this.occluder, this.people, this.detections, this.debug);
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.occlusion.addControls(this.debug);
@@ -76,6 +80,7 @@ export class App {
     this.feed.setDepthSize(info.depthWidth, info.depthHeight);
     this.occluder.setSize(info.depthWidth, info.depthHeight);
     this.resize();
+    this.timestamps.sync(info.scene, info.fps);
     this.zedSettings.sync(info.depth);
     this.people.sync(info.matting);
     this.detections.sync(info.detection);

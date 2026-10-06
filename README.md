@@ -127,7 +127,9 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `PlaneTool.ts`: placing planes with 4 clicks, and the keyboard shortcuts.
   - `Debug.ts`: the Tweakpane pane and the Stats panel. Set `SHOW_DEBUG` to `false` to hide all controls.
   - `Status.ts`: the status line at the bottom-left.
+  - `Timestamps.ts`: the timestamp buttons under Play, and logging the frame paused on.
 - `web/public/default-planes.json`: the planes created on load, per recording (see Planes below).
+- `web/public/timestamps.json`: the timestamps listed under Play, per recording, as SVO frame numbers.
 - `vite.config.ts`: Vite serves `web/` on port 8000. `yarn typecheck` runs the TypeScript checker.
 
 ## Setup (once)
@@ -191,6 +193,9 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
 - **Video**: **scene** (switches the recording; takes a second or two, and the camera re-aligns to that recording's
   calibration), play/pause, **speed** (SVO only: the bridge paces playback, and a live camera runs at its own rate),
   and **view**: _Composite_ or one of the debug views described in the stages above.
+  - **Timestamps**: frames of a recording to come back to, listed as buttons under Play (`1:08.4 · frame 1026`).
+    Clicking one pauses on that frame. Pausing logs the frame shown to the browser console: add its number under its
+    recording in `web/public/timestamps.json`, then reload the page, to list it.
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
   here; only the current recording's scene is rendered and only its folder is shown.
   Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
