@@ -12,8 +12,7 @@ flowchart LR
   bridge -- "WebSocket" --> people
   subgraph page["Page (web/): which real depth hides virtual content, per pixel"]
     people["1 · People<br/>matte shape, person depth"] --> holes["2 · Holes<br/>fill gaps in depth"]
-    holes --> ground["3 · Ground<br/>road never occludes"]
-    ground --> test["4 · Occlusion test<br/>bias · soft edges"]
+    holes --> test["3 · Occlusion test<br/>bias · soft edges"]
   end
   test --> out["Composite"]
 ```
@@ -26,7 +25,7 @@ flowchart LR
 - with detection on, the objects the ZED SDK detects (see Objects below; not part of occlusion).
 
 **The page** works out, for every pixel, the real depth that should hide virtual content. Stages 1–2 run as one GPU
-pass (`Occluder.ts`), and stages 3–4 run inside the virtual materials (`Occlusion.ts`).
+pass (`Occluder.ts`), and stage 3 runs inside the virtual materials (`Occlusion.ts`).
 
 The pane's folders follow the same order, and each one starts with its on/off toggle: turn stages off one by one
 to see what each contributes. The **Video › view** dropdown has a debug view for most stages.
@@ -59,18 +58,9 @@ to see what each contributes. The **Video › view** dropdown has a debug view f
 - **Controls** (_Holes_): **fill holes** (on/off) and **hole fill (px)**.
 - **See it:** _Holes & people_ view: filled holes are yellow.
 
-### 3 · Ground: the road never occludes
+### 3 · Occlusion test
 
-- **Problem:** the ground's own depth noise hides virtual content lying on it (a plane on the road gets eaten in patches).
-- **How:** a real point less than the **ground margin** above the recording's ground plane never hides anything. The
-  ground is the plane marked **ground** in the recording's _Planes_ folder.
-- **Controls** (_Ground_): **ground test** (on/off) and **ground margin (m)**.
-- **See it:** _Ground_ view: green is within the margin and never occludes. The road should be green, people and objects not.
-- **Limits:** within the margin, the bottom of shoes and wheels no longer hides a plane on the ground.
-
-### 4 · Occlusion test
-
-- **How:** a virtual fragment is hidden where the real depth (from stages 1–3) is closer than it by more than the
+- **How:** a virtual fragment is hidden where the real depth (from stages 1–2) is closer than it by more than the
   **bias**. With **soft edges**, the test runs against the 4 nearest depth pixels and blends their answers by distance,
   so the stair-steps of the low-resolution depth become smooth slopes, at the same place. Transparent materials fade
   through their opacity; opaque ones use alpha-to-coverage, with the renderer's antialiasing.
@@ -128,9 +118,8 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `People.ts`: stage 1's matte, from the bridge, and the _People_ controls.
   - `Occluder.ts`: stages 1–2 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
-  - `Ground.ts`: stage 3. The active recording's ground plane.
-  - `Occlusion.ts`: stage 4. `apply(material)` adds the occlusion test to any built-in material.
-  - `DepthView.ts`: the debug views (_Depth only_, _Ground_, _Holes & people_, _People matte_).
+  - `Occlusion.ts`: stage 3. `apply(material)` adds the occlusion test to any built-in material.
+  - `DepthView.ts`: the debug views (_Depth only_, _Holes & people_, _People matte_).
   - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
@@ -213,8 +202,6 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
   - **mode**: _Move_ (`W`) slides it along its own axes. _Rotate_ (`E`) turns it with the rings, or freely
     (trackball style) by dragging inside the rings, away from any of them.
   - **Reset position** puts it back where it was fitted.
-  - **ground** makes this plane the recording's ground, for the ground test (at most one per recording). It is saved as
-    `"ground": true`. The ground follows the plane live, so you can fine-tune it with the gizmo while watching the _Ground_ view.
 
 ## Placing planes
 
@@ -259,7 +246,6 @@ Before the event:
 - Install the same versions as the prototype: ZED SDK 5.5, Python 3.10, Node.js.
 - Let the first run download and optimize the AI models (several minutes each).
 - Run the full experience for a few hours to check temperatures and frame rate.
-- Place the ground plane on site, with the final camera position.
 
 ## Parked ideas
 
@@ -273,3 +259,9 @@ Tried, and removed because their gain didn't justify their complexity. They're i
   this README at that commit. Backgrounds already captured are still in `backgrounds/`.
 - **Temporal filter and edge snap** (last in commit `47169b9`, in `web/src/DepthFilter.ts`): the occluder depth was
   smoothed over time (a pixel had to stay foreground for a few frames), and its edges snapped to the video's color edges.
+- **Ground stage** (last in commit `7d6c7d3`, in `web/src/Ground.ts`): a real point less than a margin (0.15 m) above the
+  recording's ground plane never occluded, so the road's depth noise couldn't eat a plane lying on it. The ground was
+  the plane marked `"ground": true` in its recording (a checkbox in its _Planes_ section, saved in
+  `default-planes.json`), and a _Ground_ view showed in green what the test let through. Its cost: the bottoms of shoes
+  and wheels no longer hid a plane on the ground. To look at it again: `git show 7d6c7d3:web/src/Ground.ts`, the ground
+  test in `Occlusion.ts`, and the `ground` flag in `Plane.ts`, `Recordings.ts` and `default-planes.json` at that commit.

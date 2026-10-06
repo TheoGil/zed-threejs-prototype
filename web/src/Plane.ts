@@ -18,12 +18,11 @@ export interface PlaneStyle {
 }
 
 // A plane as stored in default-planes.json. `matrix` is Matrix4.elements (column-major),
-// for Matrix4.fromArray(). `ground`: this plane lies on the ground (see Ground.ts).
+// for Matrix4.fromArray().
 export interface PlaneDefinition extends PlaneStyle {
   matrix: number[];
   width: number;
   height: number;
-  ground?: boolean;
 }
 
 type Mode = "translate" | "rotate";
@@ -46,7 +45,6 @@ export class Plane {
   readonly settings: {
     edit: boolean;
     mode: Mode;
-    ground: boolean;
     color: string;
     alpha: number;
     thickness: number;
@@ -66,7 +64,6 @@ export class Plane {
     this.settings = {
       edit: false,
       mode: "translate",
-      ground: false,
       color: style.color ?? "#" + new THREE.Color().setHSL(Math.random(), 0.7, 0.55).getHexString(),
       alpha: style.alpha ?? 0.75,
       thickness: style.thickness ?? 0.02,
@@ -124,24 +121,11 @@ export class Plane {
     this.folder?.refresh();
   }
 
-  // Use Recording.setGround() instead, which keeps a single ground plane.
-  setGround(on: boolean) {
-    this.settings.ground = on;
-    this.folder?.refresh();
-  }
-
-  // Writes the plane's surface (its local z = 0 face) as (normal, w), in the camera frame:
-  // the height of a point P above it is dot(normal, P) + w. The normal (+Z) faces the camera.
-  surface(target: THREE.Vector4) {
-    const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
-    target.set(normal.x, normal.y, normal.z, -normal.dot(this.mesh.position));
-  }
-
   // Logs this plane's definition, to paste into default-planes.json under its recording.
   log() {
     this.mesh.updateMatrix();
     const round = (n: number) => Math.round(n * 1e5) / 1e5;
-    const { thickness, color, alpha, ground } = this.settings;
+    const { thickness, color, alpha } = this.settings;
     const definition: PlaneDefinition = {
       matrix: this.mesh.matrix.elements.map(round),
       width: round(this.shape.width),
@@ -149,7 +133,6 @@ export class Plane {
       thickness,
       color,
       alpha,
-      ...(ground && { ground }),
     };
     console.log(`${this.recording.name} › ${this.title}:`, definition);
   }
@@ -173,11 +156,6 @@ export class Plane {
     folder
       .addBinding(settings, "mode", { options: { "Move (W)": "translate", "Rotate (E)": "rotate" } })
       .on("change", (e) => this.control.setMode(e.value));
-    // The surface that real points must rise above to occlude (see Ground.ts).
-    folder.addBinding(settings, "ground").on("change", (e) => {
-      this.recording.setGround(this, e.value);
-      this.log();
-    });
     folder.addButton({ title: "Reset position" }).on("click", () => {
       mesh.position.copy(shape.center);
       mesh.quaternion.copy(shape.quaternion);

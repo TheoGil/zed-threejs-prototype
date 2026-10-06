@@ -52,7 +52,7 @@ export class Recording {
 
     this.folder = debug.folder("Planes")?.addFolder({ title: name, hidden: true }) ?? null;
     definitions.forEach((definition) =>
-      this.addPlane(shapeFromDefinition(definition), definition, false, definition.ground),
+      this.addPlane(shapeFromDefinition(definition), definition, false),
     );
   }
 
@@ -60,17 +60,11 @@ export class Recording {
     return this.planes.find((plane) => plane.editing);
   }
 
-  // The plane marked "ground", if any (see Ground.ts).
-  get groundPlane() {
-    return this.planes.find((plane) => plane.settings.ground);
-  }
-
-  // `style` overrides the default look; `startEditing` shows the gizmo; `ground` makes it the ground.
-  addPlane(shape: PlaneShape, style: PlaneStyle = {}, startEditing = true, ground = false) {
+  // `style` overrides the default look; `startEditing` shows the gizmo.
+  addPlane(shape: PlaneShape, style: PlaneStyle = {}, startEditing = true) {
     const plane = new Plane(this, shape, style, `Plane ${++this.count}`);
     this.planes.push(plane);
     this.setEditing(plane, startEditing);
-    if (ground) this.setGround(plane, true);
     plane.log();
   }
 
@@ -87,12 +81,6 @@ export class Recording {
   setEditing(plane: Plane, on: boolean) {
     if (on) this.planes.forEach((other) => other !== plane && other.editing && other.setEditing(false));
     plane.setEditing(on);
-  }
-
-  // Makes `plane` the ground, or not. A recording has at most one ground plane.
-  setGround(plane: Plane, on: boolean) {
-    if (on) this.planes.forEach((other) => other !== plane && other.settings.ground && other.setGround(false));
-    plane.setGround(on);
   }
 
   setActive(active: boolean) {

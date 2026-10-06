@@ -1,12 +1,10 @@
 import * as THREE from "three";
 import type { Debug } from "./Debug";
-import type { Ground } from "./Ground";
 import type { Occluder } from "./Occluder";
 import type { People } from "./People";
 
 // The occlusion test, in the virtual materials: a fragment farther from the camera than the
-// real depth at its pixel is hidden, unless that real point lies on the ground (see Ground.ts).
-// The real depth comes from the Occluder.
+// real depth at its pixel is hidden. The real depth comes from the Occluder.
 //
 // Soft edges: the test runs against the 4 nearest depth pixels, and their answers are blended
 // by distance (like percentage-closer filtering for shadow maps). The fragment fades by that
@@ -18,7 +16,7 @@ import type { People } from "./People";
 export class Occlusion {
   private readonly uniforms;
 
-  constructor(occluder: Occluder, ground: Ground, people: People) {
+  constructor(occluder: Occluder, people: People) {
     this.uniforms = {
       uOccluder: occluder.output,
       uOccluderSize: occluder.outputSize,
@@ -26,7 +24,6 @@ export class Occlusion {
       uBias: { value: 0.05 },
       uOcclusion: { value: true },
       uSoftEdges: { value: true },
-      ...ground.uniforms,
       uMatte: people.uniforms.uMatte,
       uMatteOn: people.uniforms.uMatteOn,
     };
@@ -60,23 +57,14 @@ export class Occlusion {
         uniform float uBias;
         uniform bool uOcclusion;
         uniform bool uSoftEdges;
-        uniform vec4 uGround;
-        uniform float uGroundMargin;
-        uniform bool uGroundOn;
         uniform sampler2D uMatte;
         uniform bool uMatteOn;
 
         // 1 if the real depth at occluder pixel 'texel' hides this fragment, else 0.
-        // viewPosition: vViewPosition, minus this fragment's view-space position.
-        float occludes(vec2 texel, vec3 viewPosition) {
+        // fragmentDepth: vViewPosition.z, this fragment's distance along the camera axis, like the ZED depth.
+        float occludes(vec2 texel, float fragmentDepth) {
           float realDepth = texture2D(uOccluder, (texel + 0.5) / uOccluderSize).r;
-          // viewPosition.z is this fragment's distance along the camera axis, like the ZED depth.
-          if (realDepth <= 0.0 || viewPosition.z <= realDepth + uBias) return 0.0;
-          // The real point there, on this fragment's camera ray. Within the margin of the
-          // ground, it never occludes: that's the road, and its noise.
-          vec3 realPoint = -viewPosition * (realDepth / viewPosition.z);
-          bool onGround = uGroundOn && dot(uGround.xyz, realPoint) + uGround.w < uGroundMargin;
-          return onGround ? 0.0 : 1.0;
+          return realDepth > 0.0 && fragmentDepth > realDepth + uBias ? 1.0 : 0.0;
         }
         ` +
         shader.fragmentShader
@@ -92,8 +80,8 @@ export class Occlusion {
               vec2 blend = position - base;
               if (!uSoftEdges) blend = step(0.5, blend); // the nearest pixel only: hard edges
               float coverage = mix(
-                mix(occludes(base, vViewPosition), occludes(base + vec2(1.0, 0.0), vViewPosition), blend.x),
-                mix(occludes(base + vec2(0.0, 1.0), vViewPosition), occludes(base + vec2(1.0, 1.0), vViewPosition), blend.x),
+                mix(occludes(base, vViewPosition.z), occludes(base + vec2(1.0, 0.0), vViewPosition.z), blend.x),
+                mix(occludes(base + vec2(0.0, 1.0), vViewPosition.z), occludes(base + vec2(1.0, 1.0), vViewPosition.z), blend.x),
                 blend.y);
               // A person here, in front of this fragment: hidden by the matte's alpha.
               float personDepth = texture2D(uOccluder, screenUv).b;
