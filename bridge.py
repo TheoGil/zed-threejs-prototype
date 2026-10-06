@@ -8,19 +8,22 @@ and streams them to the browser. The page can switch between scenes.
     python bridge.py --live               # add the live camera to the scenes
 
 Protocol (ws://localhost:8765):
-  1. On connect, and again after each scene switch, depth or matting settings change or
-     background capture, one JSON text message with the image and depth sizes, intrinsics,
-     the list of scenes, the current scene, the depth and matting settings and the
-     background's description.
+  1. On connect, and again after each scene switch, depth, matting or detection settings
+     change or background capture, one JSON text message with the image and depth sizes,
+     intrinsics, the list of scenes, the current scene, the depth, matting and detection
+     settings and the background's description.
   2. Binary messages, each starting with a 2-byte header [kind, flags]:
        kind 0, a frame (one per frame):
          [depth: depthWidth*depthHeight uint16 little-endian, millimeters,
                  0 = unknown, 65535 = too far (beyond the ZED's range)]
+         if flags & HAS_OBJECTS: [objects length: uint32 little-endian]
+                                 [objects detected: UTF-8 JSON list, see object_info()]
          if flags & HAS_MATTE: [matte length: uint32 little-endian]
                                [people's alpha matte: grayscale JPEG, video size, 255 = person]
          [color: JPEG bytes, until end of message]
-       kind 1, the scene's background, same layout (never with a matte), with the size given
-         by the info's "background". Sent on connect, after a scene switch and after a capture.
+       kind 1, the scene's background, same layout (never with objects or a matte), with the
+         size given by the info's "background". Sent on connect, after a scene switch and
+         after a capture.
   Browser -> bridge:
      {"type": "control", "playing": bool, "speed": float}
        (speed only applies to SVO sources; a live camera runs at its own rate)
@@ -28,6 +31,7 @@ Protocol (ws://localhost:8765):
      {"type": "depth", "settings": {...}}   any subset of DEPTH_SETTINGS
      {"type": "capture", "seconds": float}  capture the background from the next frames
      {"type": "matting", "settings": {...}}  any subset of MATTING_SETTINGS
+     {"type": "detection", "settings": {...}}  any subset of DETECTION_SETTINGS
 """
 
 import asyncio
@@ -74,9 +78,22 @@ MATTING_SETTINGS = dict(
 MATTING_INPUTS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 MATTE_JPEG_QUALITY = 90
 
+# ZED SDK object detection (built-in models), which the page can change. The confidence applies
+# from the next frame; changing the model takes about a second (minutes the first time a model
+# is used: the SDK optimizes it for the GPU, then caches it).
+DETECTION_SETTINGS = dict(
+    enabled=True,
+    model="MULTI_CLASS_BOX_FAST",  # one of DETECTION_MODELS
+    confidence=50,  # 1-99, objects detected with less are dropped
+)
+DETECTION_MODELS = [
+    "MULTI_CLASS_BOX_FAST", "MULTI_CLASS_BOX_MEDIUM", "MULTI_CLASS_BOX_ACCURATE",  # people, vehicles, bags...
+    "PERSON_HEAD_BOX_FAST", "PERSON_HEAD_BOX_ACCURATE",  # heads only, for crowds
+]
+
 # Binary message kinds (the first byte of the 2-byte header), and flags (the second).
 FRAME, BACKGROUND = 0, 1
-HAS_MATTE = 1
+HAS_MATTE, HAS_OBJECTS = 1, 2
 # Depth beyond the ZED's range (+inf from the SDK), sent as the largest uint16: "nothing within
 # range here" never occludes, unlike an unknown pixel (0). The page reads it as 65.535 m.
 TOO_FAR_MM = 65535
@@ -88,19 +105,51 @@ MIN_VALID_SHARE = 0.25
 BACKGROUND_DIR = Path(__file__).parent / "backgrounds"
 
 
-def encode_frame(kind, bgr, depth_m, matte=None):
+def encode_frame(kind, bgr, depth_m, matte=None, objects=None):
     """kind: FRAME or BACKGROUND, bgr: HxWx3 uint8, depth_m: float32 meters
-    (+inf = too far, NaN/-inf/0 = unknown), matte: HxW uint8 or None."""
+    (+inf = too far, NaN/-inf/0 = unknown), matte: HxW uint8 or None,
+    objects: a list of object_info() or None (detection off)."""
     mm = np.nan_to_num(depth_m, nan=0.0, posinf=TOO_FAR_MM / 1000, neginf=0.0) * 1000.0
     mm = np.clip(mm, 0, TOO_FAR_MM).astype("<u2")
     ok, jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     # 2 bytes keep the depth aligned for a Uint16Array on the page.
-    if matte is None:
-        return bytes([kind, 0]) + mm.tobytes() + jpeg.tobytes()
-    # A grayscale JPEG: a few dozen KB instead of about 900 KB raw, without the cost of compressing it losslessly.
-    ok, matte_jpeg = cv2.imencode(".jpg", matte, [cv2.IMWRITE_JPEG_QUALITY, MATTE_JPEG_QUALITY])
-    length = len(matte_jpeg).to_bytes(4, "little")
-    return bytes([kind, HAS_MATTE]) + mm.tobytes() + length + matte_jpeg.tobytes() + jpeg.tobytes()
+    flags, parts = 0, [mm.tobytes()]
+    if objects is not None:
+        flags |= HAS_OBJECTS
+        data = json.dumps(objects, separators=(",", ":")).encode()
+        parts += [len(data).to_bytes(4, "little"), data]
+    if matte is not None:
+        flags |= HAS_MATTE
+        # A grayscale JPEG: a few dozen KB instead of about 900 KB raw, without the cost of compressing it losslessly.
+        ok, matte_jpeg = cv2.imencode(".jpg", matte, [cv2.IMWRITE_JPEG_QUALITY, MATTE_JPEG_QUALITY])
+        parts += [len(matte_jpeg).to_bytes(4, "little"), matte_jpeg.tobytes()]
+    return bytes([kind, flags]) + b"".join(parts) + jpeg.tobytes()
+
+
+def json_values(values, digits=3):
+    """A (nested) list for JSON: rounded, with None where unknown (JSON has no NaN)."""
+    a = np.asarray(values, dtype=np.float64).round(digits)
+    return np.where(np.isfinite(a), a, None).tolist()
+
+
+def object_info(obj, box_scale):
+    """One object the ZED SDK detected, for the page. 3D values in meters, in the camera's
+    frame (the page's); box2d in pixels of the image sent."""
+    return dict(
+        id=obj.id,  # stable while the object is tracked
+        label=obj.label.name,  # PERSON, VEHICLE, BAG, ANIMAL, ELECTRONICS, FRUIT_VEGETABLE, SPORT
+        sublabel=obj.sublabel.name,  # finer: CAR, BUS, BICYCLE, BACKPACK, PERSON_HEAD...
+        confidence=round(obj.confidence),  # 0-100
+        tracking=obj.tracking_state.name,  # OK, OFF, SEARCHING (lost for now), TERMINATE
+        moving=obj.action_state.name == "MOVING",
+        position=json_values(obj.position),
+        velocity=json_values(obj.velocity),  # meters per second
+        dimensions=json_values(obj.dimensions),  # width, height, length
+        # 8 corners: 0-3 one horizontal face, 4-7 the other, corner i above or below i+4.
+        box3d=json_values(obj.bounding_box),
+        # 4 corners, clockwise from the top-left, at the recording's native resolution: scaled.
+        box2d=json_values(np.asarray(obj.bounding_box_2d, dtype=np.float64).reshape(-1, 2) * box_scale, 1),
+    )
 
 
 class Capture:
@@ -188,6 +237,18 @@ def update_matting_settings(settings, changes):
     return settings
 
 
+def update_detection_settings(settings, changes):
+    """`settings` with the valid entries of `changes` (from the page) applied."""
+    settings = dict(settings)
+    if "enabled" in changes:
+        settings["enabled"] = bool(changes["enabled"])
+    if "confidence" in changes:
+        settings["confidence"] = min(max(int(changes["confidence"]), 1), 99)
+    if changes.get("model") in DETECTION_MODELS:
+        settings["model"] = changes["model"]
+    return settings
+
+
 def update_depth_settings(settings, changes):
     """`settings` with the valid entries of `changes` (from the page) applied."""
     settings = dict(settings)
@@ -233,9 +294,18 @@ class ZedSource:
         self.fps = info.camera_configuration.fps if svo_path else None
 
         self.runtime = sl.RuntimeParameters()
+        # Detected objects in the camera's frame (the page's), not the world's: with the IMU,
+        # positional tracking would align the world with gravity.
+        self.runtime.measure3D_reference_frame = sl.REFERENCE_FRAME.CAMERA
         self.image = sl.Mat()
         self.depth = sl.Mat()
         self.set_depth_settings(depth_settings)
+
+        self.detection_model = None  # the model enabled, None when detection is off
+        self.detection_runtime = sl.ObjectDetectionRuntimeParameters()
+        self.objects = sl.Objects()
+        native = info.camera_configuration.resolution
+        self.box_scale = (IMG_W / native.width, IMG_H / native.height)
 
     def set_depth_settings(self, settings):
         """Applies the settings that don't need a reopen, from the next grab."""
@@ -244,6 +314,42 @@ class ZedSource:
         self.runtime.enable_fill_mode = settings["fill"]
         self.runtime.remove_saturated_areas = settings["removeSaturated"]
         self.depth_size = DEPTH_RESOLUTIONS[settings["resolution"]]
+
+    def set_detection(self, settings):
+        """Enables, changes or disables object detection, from the next grab.
+        Returns None, or why detection couldn't start."""
+        sl = self.sl
+        self.detection_runtime.detection_confidence_threshold = settings["confidence"]
+        model = settings["model"] if settings["enabled"] else None
+        if model == self.detection_model:
+            return None
+        if self.detection_model:
+            self.cam.disable_object_detection()
+            self.detection_model = None
+        if not model:
+            return None
+        # Tracking objects across frames (stable ids, velocity) needs positional tracking.
+        if not self.cam.is_positional_tracking_enabled():
+            tracking = sl.PositionalTrackingParameters()
+            tracking.set_as_static = True  # the camera doesn't move
+            err = self.cam.enable_positional_tracking(tracking)
+            if err != sl.ERROR_CODE.SUCCESS:
+                return f"positional tracking: {err}"
+        params = sl.ObjectDetectionParameters()
+        params.detection_model = getattr(sl.OBJECT_DETECTION_MODEL, model)
+        params.enable_tracking = True
+        err = self.cam.enable_object_detection(params)
+        if err != sl.ERROR_CODE.SUCCESS:
+            return str(err)
+        self.detection_model = model
+        return None
+
+    def detect(self):
+        """The objects detected in the frame last grabbed (see object_info), or None when detection is off."""
+        if not self.detection_model:
+            return None
+        self.cam.retrieve_objects(self.objects, self.detection_runtime)
+        return [object_info(obj, self.box_scale) for obj in self.objects.object_list]
 
     # The SVO frame last grabbed (None for a live camera), and going back to it:
     # the next grab returns the frame at the position set.
@@ -295,7 +401,18 @@ async def main():
     print("Scenes:", ", ".join(scenes))
     scene = next(iter(scenes))
     depth_settings = dict(DEPTH_SETTINGS)
-    source = scenes[scene](depth_settings)
+    detection_settings = dict(DETECTION_SETTINGS)
+    detection_error = None  # why detection couldn't start, if it couldn't
+
+    def open_source(name, settings):
+        nonlocal detection_error
+        opened = scenes[name](settings)
+        detection_error = opened.set_detection(detection_settings)
+        if detection_error:
+            print(f"Object detection unavailable: {detection_error}")
+        return opened
+
+    source = open_source(scene, depth_settings)
     background = Background.load(scene)
     capture = None
     try:
@@ -312,6 +429,7 @@ async def main():
             scenes=list(scenes), scene=scene, depth=depth_settings,
             background=background.info() if background else None,
             matting=dict(available=matting is not None, **matting_settings),
+            detection=dict(error=detection_error, **detection_settings),
         ))
 
     info = make_info()
@@ -320,10 +438,11 @@ async def main():
     # Changes asked by the page, applied between frames by the main loop.
     requested_scene = None
     requested_depth = None
+    requested_detection = None
     requested_capture = None  # seconds
 
     async def handler(ws):
-        nonlocal requested_scene, requested_depth, requested_capture, matting_settings, info
+        nonlocal requested_scene, requested_depth, requested_detection, requested_capture, matting_settings, info
         # Queued without waiting, like the frames: awaiting a send waits for the connection to
         # drain, which the frames broadcast meanwhile can keep from ever happening, and then this
         # handler would never read the page's messages. The page gets the info before any frame.
@@ -349,20 +468,31 @@ async def main():
                     matting_settings = update_matting_settings(matting_settings, msg.get("settings", {}))
                     info = make_info()
                     websockets.broadcast(clients, info)
+                elif msg.get("type") == "detection":
+                    requested_detection = update_detection_settings(
+                        requested_detection or detection_settings, msg.get("settings", {})
+                    )
         finally:
             clients.discard(ws)
 
+    matting_time = 0.0  # seconds spent matting, since the last stats
+
     def send_frame(frame):
+        nonlocal matting_time
         if frame:
             bgr, depth_m = frame
+            # Detection itself runs in grab(); this only reads its results.
+            objects = source.detect()
             matte = None
             if matting and matting_settings["enabled"]:
+                start = time.perf_counter()
                 size = MATTING_INPUTS[matting_settings["input"]]
                 small = bgr if size == (IMG_W, IMG_H) else cv2.resize(bgr, size, interpolation=cv2.INTER_AREA)
                 matte = matting.run(small, matting_settings["ratio"])
                 if size != (IMG_W, IMG_H):
                     matte = cv2.resize(matte, (IMG_W, IMG_H), interpolation=cv2.INTER_LINEAR)
-            message = encode_frame(FRAME, bgr, depth_m, matte)
+                matting_time += time.perf_counter() - start
+            message = encode_frame(FRAME, bgr, depth_m, matte, objects)
             # Skip pages that haven't taken the previous frame yet (e.g. a hidden tab):
             # queuing frames for them slows the bridge down for everyone.
             ready = [ws for ws in clients if ws.transport.get_write_buffer_size() < len(message)]
@@ -396,10 +526,10 @@ async def main():
                     position = source.svo_position() if name == scene else None
                     source.close()
                     try:
-                        source, scene, depth_settings = scenes[name](settings), name, settings
+                        source, scene, depth_settings = open_source(name, settings), name, settings
                     except RuntimeError as e:
                         print(e)
-                        source = scenes[scene](depth_settings)  # fall back to what we had
+                        source = open_source(scene, depth_settings)  # fall back to what we had
                     source.seek(position)
                     background = Background.load(scene)
                     if matting:
@@ -410,6 +540,19 @@ async def main():
                 # New intrinsics or depth size: the page re-aligns its camera and resizes its textures.
                 send_info()
                 send_frame(source.regrab())  # show the change right away, even when paused
+                next_frame = time.perf_counter()
+                await asyncio.sleep(0)
+
+            if requested_detection is not None:
+                detection_settings, requested_detection = requested_detection, None
+                if detection_settings["enabled"] and detection_settings["model"] != source.detection_model:
+                    print(f"Enabling object detection ({detection_settings['model']})...")
+                detection_error = source.set_detection(detection_settings)
+                if detection_error:
+                    print(f"Object detection unavailable: {detection_error}")
+                info = make_info()
+                websockets.broadcast(clients, info)
+                send_frame(source.regrab())
                 next_frame = time.perf_counter()
                 await asyncio.sleep(0)
 
@@ -441,8 +584,12 @@ async def main():
             work += time.perf_counter() - start
             if time.perf_counter() - stats_start >= 5:
                 elapsed = time.perf_counter() - stats_start
-                print(f"{frames / elapsed:.1f} fps sent, {work / frames * 1000:.0f} ms per frame of work")
+                print(
+                    f"{frames / elapsed:.1f} fps sent, {work / frames * 1000:.0f} ms per frame of work"
+                    f" (matting {matting_time / frames * 1000:.0f} ms)"
+                )
                 frames, work, stats_start = 0, 0.0, time.perf_counter()
+                matting_time = 0.0
 
             if source.fps:
                 # Pace against a fixed schedule rather than sleeping "the rest of this frame":

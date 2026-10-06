@@ -1,5 +1,6 @@
 import type { BladeApi, FolderApi } from "tweakpane";
 import type { Debug } from "./Debug";
+import type { DetectedObject, DetectionInfo } from "./Detections";
 import type { MattingInfo } from "./People";
 import type { Status } from "./Status";
 import type { DepthSettings } from "./ZedSettings";
@@ -8,8 +9,8 @@ import type { DepthSettings } from "./ZedSettings";
 const WS_URL =
   new URLSearchParams(location.search).get("ws") ?? "ws://localhost:8765";
 
-// Sent by the bridge on connect and after each scene switch, depth or matting settings
-// change or background capture (see bridge.py).
+// Sent by the bridge on connect and after each scene switch, depth, matting or detection
+// settings change or background capture (see bridge.py).
 export interface StreamInfo {
   width: number; // color image size, in pixels
   height: number;
@@ -24,6 +25,7 @@ export interface StreamInfo {
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
   background: BackgroundInfo | null; // the scene's captured background, if any
   matting: MattingInfo; // people matting in the bridge
+  detection: DetectionInfo; // ZED SDK object detection in the bridge
 }
 
 export interface BackgroundInfo {
@@ -37,6 +39,7 @@ export interface Frame {
   image: HTMLImageElement;
   depthMm: Uint16Array; // depthWidth * depthHeight, millimeters, 0 = invalid
   matte: HTMLImageElement | null; // people's alpha matte, video size (white = person), when matting is on
+  objects: DetectedObject[] | null; // the objects detected in this frame, when detection is on
 }
 
 interface Handlers {
@@ -49,6 +52,7 @@ interface Handlers {
 const FRAME = 0;
 const BACKGROUND = 1;
 const HAS_MATTE = 1;
+const HAS_OBJECTS = 2;
 const HEADER_BYTES = 2;
 
 // The connection to bridge.py. Receives the stream info, the frames and the background,
@@ -181,14 +185,20 @@ export class Bridge {
   }
 }
 
-// A frame or background message: [header][depth: uint16 mm]([matte length: uint32][matte: JPEG])
-// [color: JPEG]. null if a JPEG is broken.
+// A frame or background message: [header][depth: uint16 mm]([objects length: uint32][objects: JSON])
+// ([matte length: uint32][matte: JPEG])[color: JPEG]. null if a JPEG is broken.
 async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: number): Promise<Frame | null> {
   const flags = new Uint8Array(buffer, 1, 1)[0];
   let offset = HEADER_BYTES;
   const depthCount = depthWidth * depthHeight;
   const depthMm = new Uint16Array(buffer, offset, depthCount);
   offset += depthCount * 2;
+  let objects: DetectedObject[] | null = null;
+  if (flags & HAS_OBJECTS) {
+    const length = new DataView(buffer, offset, 4).getUint32(0, true);
+    objects = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, offset + 4, length)));
+    offset += 4 + length;
+  }
   let matteJpeg: Uint8Array<ArrayBuffer> | null = null;
   if (flags & HAS_MATTE) {
     const length = new DataView(buffer, offset, 4).getUint32(0, true);
@@ -200,7 +210,7 @@ async function decode(buffer: ArrayBuffer, depthWidth: number, depthHeight: numb
       decodeJpeg(new Uint8Array(buffer, offset)),
       matteJpeg ? decodeJpeg(matteJpeg) : null,
     ]);
-    return { image, depthMm, matte };
+    return { image, depthMm, matte, objects };
   } catch {
     return null;
   }

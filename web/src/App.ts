@@ -3,6 +3,7 @@ import { Background } from "./Background";
 import { Bridge, type StreamInfo } from "./Bridge";
 import { Debug } from "./Debug";
 import { DepthView } from "./DepthView";
+import { Detections } from "./Detections";
 import { Feed } from "./Feed";
 import { Ground } from "./Ground";
 import { Occluder } from "./Occluder";
@@ -26,6 +27,7 @@ export class App {
   private readonly background = new Background(this.feed);
   private readonly people = new People(this.feed);
   private readonly occluder = new Occluder(this.background, this.people);
+  private readonly detections = new Detections();
   private readonly occlusion: Occlusion;
   private readonly bridge: Bridge;
   private readonly zedSettings: ZedSettings;
@@ -34,7 +36,7 @@ export class App {
   private readonly recordings: Recordings;
 
   // The order of the addControls() calls sets the order of the folders in the debug pane:
-  // the occlusion pipeline's stages, in order (see the README).
+  // the occlusion pipeline's stages, in order (see the README), then the objects detected.
   constructor(defaultPlanes: DefaultPlanes) {
     const canvas = this.renderer.domElement;
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -44,7 +46,10 @@ export class App {
     this.bridge = new Bridge(
       {
         onInfo: (info) => this.onInfo(info),
-        onFrame: (frame) => this.feed.update(frame),
+        onFrame: (frame) => {
+          this.feed.update(frame);
+          this.detections.update(frame.objects);
+        },
         onBackground: (frame) => this.background.set(frame, this.bridge.info!.background!),
       },
       this.status,
@@ -57,6 +62,7 @@ export class App {
     this.occluder.addControls(this.debug);
     this.ground.addControls(this.debug);
     this.occlusion.addControls(this.debug);
+    this.detections.addControls(this.debug, this.bridge);
     this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -80,6 +86,7 @@ export class App {
     this.zedSettings.sync(info.depth);
     this.background.sync(info.background);
     this.people.sync(info.matting);
+    this.detections.sync(info.detection);
     this.planeTool.setRecording(this.recordings.activate(info.scene));
   }
 
@@ -97,6 +104,7 @@ export class App {
     this.ground.update(this.recordings.active?.groundPlane);
     this.people.update();
     this.occluder.render(this.renderer);
+    this.detections.placeIn(this.recordings.scene);
     if (this.depthView.active) this.depthView.render(this.renderer);
     else this.renderer.render(this.recordings.scene, this.camera);
     this.debug.end();

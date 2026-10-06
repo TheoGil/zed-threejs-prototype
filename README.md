@@ -112,10 +112,32 @@ shows the same frame again with it, so you can compare settings while paused. Th
 - **drop saturated**: removes pixels in over-exposed areas.
 - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
 
+### Objects (ZED object detection, not part of occlusion)
+
+The bridge runs the ZED SDK's object detection on each frame and sends what it finds with that frame, so the objects
+always match the video and depth shown. The page draws each one as a 3D box with its label and tracking id (people in
+magenta, vehicles in cyan, anything else in yellow; fainter while the SDK has lost it and only predicts where it is).
+The boxes are drawn over everything: they show what the bridge sees, and aren't part of the scene.
+
+- **Per object** (`DetectedObject` in `Detections.ts`): a tracking id (stable while the object stays in view), label
+  and finer sub-label (e.g. VEHICLE / BUS), confidence, tracking state, whether it's moving, and in the camera's frame
+  (the scene's): position, velocity (m/s), dimensions, the 8 corners of its 3D box, and its 2D box in video pixels.
+  `Detections.objects` holds the last frame's, for content that reacts to them.
+- **Controls** (_Objects_): **show boxes** (page only), **detection (bridge)** (on/off), **model**, **min confidence**.
+  - _Multi-class_ (fast, medium, accurate): people, vehicles, bags, animals, electronics, fruit and vegetables, sports
+    equipment.
+  - _Heads_ (fast, accurate): people's heads only, which holds up better when people overlap.
+- **Cost:** about 10 ms per frame with the fast multi-class model (measured on the street recording).
+- **First use of a model:** the SDK optimizes it for the GPU, then caches it. That took under a second for the
+  multi-class models here (already optimized), but the heads fast model estimated **33 minutes**, during which the
+  bridge sends nothing (its log shows the progress). Switch to a new model well before you need it.
+- **Limits:** with recordings, seeking, looping and switching scenes restart the tracking, so ids change. The SDK can
+  also run your own detector (a YOLO-style ONNX model, or boxes you compute yourself); that isn't wired in.
+
 ## Files
 
-- `bridge.py`: reads the ZED or a recording; sends color, depth and the people matte, and the settings on connect and
-  after each change.
+- `bridge.py`: reads the ZED or a recording; sends color, depth, the objects detected and the people matte, and the
+  settings on connect and after each change.
 - `matting.py`: people's alpha matte for each frame, from Robust Video Matting, with ONNX Runtime on DirectML.
 - `web/src/` (TypeScript), one class per feature. `App` creates and wires the others, in pipeline order.
   - `App.ts`: the renderer, the render loop, and the canvas size.
@@ -130,6 +152,7 @@ shows the same frame again with it, so you can compare settings while paused. Th
   - `Ground.ts`: stage 4. The active recording's ground plane.
   - `Occlusion.ts`: stage 5. `apply(material)` adds the occlusion test to any built-in material.
   - `DepthView.ts`: the debug views (_Depth only_, _Ground_, _Foreground_, _People matte_).
+  - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Objects_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
   - `Recordings.ts`: one `THREE.Scene` per recording, and loading `default-planes.json`.
   - `Plane.ts`: one plane, with its mesh, its gizmo and its controls.
@@ -175,7 +198,8 @@ shows the same frame again with it, so you can compare settings while paused. Th
    ```
 
 The first run with each NEURAL depth mode (NEURAL_LIGHT, NEURAL, NEURAL_PLUS) downloads its AI model
-and optimizes it for the GPU, which takes a few minutes. Later runs start in seconds.
+and optimizes it for the GPU, which takes a few minutes. Later runs start in seconds. Object detection models do the
+same the first time each is used, which can take much longer (see Objects above).
 
 ## Run
 
@@ -248,6 +272,7 @@ Measured per frame on the prototype laptop, for reference:
 
 - ZED NEURAL depth: about 24 ms on recordings (a live camera skips video decoding).
 - People matting (RVM, 640×360 input): about 12 ms.
+- Object detection (multi-class fast): about 10 ms.
 - Browser passes (the Occluder's two passes, the occlusion test): no measurable cost.
 
 Before the event:
