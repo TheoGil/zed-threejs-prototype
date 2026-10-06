@@ -47,6 +47,8 @@ import websockets
 from matting import Matting
 
 PORT = 8765
+# The scene opened first, when there (and without --live, which opens the live camera first).
+DEFAULT_SCENE = "ZED2_HD2K_Runners_H264"
 IMG_W, IMG_H = 1280, 720
 JPEG_QUALITY = 85
 
@@ -68,7 +70,7 @@ DEPTH_RESOLUTIONS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 
 # People matting (see matting.py), which the page can change; applies from the next frame.
 MATTING_SETTINGS = dict(
-    enabled=True,
+    enabled=False,
     input="640x360",  # the size of the image RVM gets, one of MATTING_INPUTS: smaller is faster, softer edges
     ratio=0.5,  # the share of that size RVM works at internally: higher finds smaller people, slower
 )
@@ -348,7 +350,7 @@ def find_scenes(args):
 async def main():
     scenes = find_scenes(sys.argv[1:])
     print("Scenes:", ", ".join(scenes))
-    scene = next(iter(scenes))
+    scene = DEFAULT_SCENE if DEFAULT_SCENE in scenes and "--live" not in sys.argv else next(iter(scenes))
     depth_settings = dict(DEPTH_SETTINGS)
     detection_settings = dict(DETECTION_SETTINGS)
     detection_error = None  # why detection couldn't start, if it couldn't

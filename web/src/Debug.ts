@@ -22,7 +22,7 @@ export class Debug {
     if (!this.pane) return null;
     let folder = this.folders.get(title);
     if (!folder) {
-      folder = this.pane.addFolder({ title });
+      folder = this.pane.addFolder({ title, expanded: false });
       this.folders.set(title, folder);
     }
     return folder;

@@ -50,7 +50,7 @@ export class Recording {
     sun.position.set(1, 2, 1);
     this.scene.add(sun);
 
-    this.folder = debug.folder("Planes")?.addFolder({ title: name, hidden: true }) ?? null;
+    this.folder = debug.folder("Planes")?.addFolder({ title: name, hidden: true, expanded: false }) ?? null;
     definitions.forEach((definition) =>
       this.addPlane(shapeFromDefinition(definition), definition, false),
     );

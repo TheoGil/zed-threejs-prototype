@@ -21,7 +21,7 @@ export class People {
   readonly uniforms;
   private readonly params = {
     use: true,
-    enabled: true,
+    enabled: false,
     input: "640x360" as MattingInfo["input"],
     ratio: 0.5,
   };

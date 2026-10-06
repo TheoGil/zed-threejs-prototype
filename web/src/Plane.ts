@@ -93,7 +93,7 @@ export class Plane {
     });
     recording.scene.add(this.control.getHelper());
 
-    this.folder = recording.folder?.addFolder({ title }) ?? null;
+    this.folder = recording.folder?.addFolder({ title, expanded: false }) ?? null;
     if (this.folder) this.addControls(this.folder);
     this.setEditing(false);
   }
