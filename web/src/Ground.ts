@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Pane } from "tweakpane";
+import type { Debug } from "./Debug";
 import type { Plane } from "./Plane";
 
 // The active recording's ground plane, as shader uniforms. A real point within `margin`
@@ -14,10 +14,12 @@ export class Ground {
   };
   private readonly params = { enabled: true };
 
-  // Called by Occlusion, so these controls sit next to its own.
-  addControls(pane: Pane) {
-    pane.addBinding(this.params, "enabled", { label: "ground test" });
-    pane.addBinding(this.uniforms.uGroundMargin, "value", {
+  // The "Ground" folder. Called by App, at this folder's place in the pane.
+  addControls(debug: Debug) {
+    const ui = debug.folder("Ground");
+    if (!ui) return;
+    ui.addBinding(this.params, "enabled", { label: "ground test" });
+    ui.addBinding(this.uniforms.uGroundMargin, "value", {
       label: "ground margin (m)",
       min: 0,
       max: 0.5,

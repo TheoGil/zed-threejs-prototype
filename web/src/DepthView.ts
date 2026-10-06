@@ -1,37 +1,50 @@
 import * as THREE from "three";
 import { BACKGROUND_GLSL, type Background } from "./Background";
 import type { Debug } from "./Debug";
-import type { DepthFilter } from "./DepthFilter";
+import type { Occluder } from "./Occluder";
 import type { Ground } from "./Ground";
+import type { People } from "./People";
 import type { ZedCamera } from "./ZedCamera";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-type View = "composite" | "depth" | "ground" | "foreground";
-const VIEW_INDEX = { depth: 0, ground: 1, foreground: 2 };
+type View = "composite" | "depth" | "ground" | "foreground" | "matte";
+const VIEW_INDEX = { depth: 0, ground: 1, foreground: 2, matte: 3 };
 
 // Full-screen debug views of the real-world depth, instead of the composite. All show
-// the depth occlusion uses: DepthFilter's output.
+// the depth occlusion uses: the Occluder's output.
 // - "Depth only": that depth as a colormap (red is near, blue is far, black has no depth).
 // - "Ground": the video, tinted green where the real point is within the ground margin
 //   (it never occludes), darkened where there's no depth.
 // - "Foreground": the video, tinted where the live depth is used: red where something stands
 //   in front of the background, blue where the background is stale (the live depth is farther);
 //   yellow where a hole inside the foreground was filled. Darkened where there's no depth.
+// - "People matte": the matte the bridge sends (white = person), whether the page uses it or
+//   not. Black when matting is off or unavailable.
 export class DepthView {
   readonly params = { view: "composite" as View };
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly uView = { value: 0 };
 
-  constructor(filter: DepthFilter, background: Background, zedCamera: ZedCamera, ground: Ground, debug: Debug) {
+  constructor(
+    occluder: Occluder,
+    background: Background,
+    people: People,
+    zedCamera: ZedCamera,
+    ground: Ground,
+    debug: Debug,
+  ) {
     const quad = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
       new THREE.ShaderMaterial({
         uniforms: {
           ...background.uniforms,
           ...ground.uniforms,
-          uOccluder: filter.output,
+          uMatte: people.uniforms.uMatte,
+          uMatteOn: people.uniforms.uMatteOn,
+          uHasMatte: people.uniforms.uHasMatte,
+          uOccluder: occluder.output,
           uView: this.uView,
           uMax: { value: DEPTH_VIEW_MAX },
           // The same object setIntrinsics() updates, so this follows the calibration.
@@ -44,6 +57,9 @@ export class DepthView {
           BACKGROUND_GLSL +
           `
           uniform sampler2D uOccluder;
+          uniform sampler2D uMatte;
+          uniform bool uMatteOn;
+          uniform bool uHasMatte;
           uniform int uView; // VIEW_INDEX
           uniform float uMax;
           uniform mat4 uProjectionInverse;
@@ -64,7 +80,13 @@ export class DepthView {
             return vec3(dot(v4, kR) + dot(v2, kR2), dot(v4, kG) + dot(v2, kG2), dot(v4, kB) + dot(v2, kB2));
           }
           void main() {
-            vec2 occluder = texture2D(uOccluder, vUv).rg;
+            if (uView == 3) {
+              float alpha = uHasMatte ? texture2D(uMatte, vUv).r : 0.0;
+              gl_FragColor = vec4(vec3(alpha), 1.0);
+              return;
+            }
+            vec4 occluder4 = texture2D(uOccluder, vUv);
+            vec2 occluder = occluder4.rg;
             float d = occluder.r;
             if (uView == 0) {
               gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
@@ -86,6 +108,9 @@ export class DepthView {
               else if (occluder.g > 0.75 && bg > 0.0) tint = d < bg ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.4, 1.0);
               color = mix(color, tint, 0.5);
             }
+            // People, from the matte: magenta, as strong as their alpha. People are taken out of
+            // the depth above, so with no background behind them, they'd be darkened as unknown.
+            if (uView == 2 && uMatteOn) color = mix(color, vec3(1.0, 0.0, 1.0), 0.6 * texture2D(uMatte, vUv).r);
             gl_FragColor = linearToOutputTexel(vec4(color, 1.0));
           }`,
       }),
@@ -94,7 +119,13 @@ export class DepthView {
     this.scene.add(quad);
 
     debug.folder("Video")?.addBinding(this.params, "view", {
-      options: { Composite: "composite", "Depth only": "depth", Ground: "ground", Foreground: "foreground" },
+      options: {
+        Composite: "composite",
+        "Depth only": "depth",
+        Ground: "ground",
+        Foreground: "foreground",
+        "People matte": "matte",
+      },
     });
   }
 

@@ -3,7 +3,7 @@ import type { BackgroundInfo, Bridge, Frame } from "./Bridge";
 import type { Debug } from "./Debug";
 import type { Feed } from "./Feed";
 
-// GLSL for comparing the live depth with the background, used by DepthFilter (which
+// GLSL for comparing the live depth with the background, used by Occluder (which
 // decides, per pixel, which depth occludes) and DepthView. Needs Background.uniforms
 // (which include the live depth and video). Depths in meters, 0 = unknown, about 65 = too far.
 export const BACKGROUND_GLSL = /* glsl */ `
@@ -51,7 +51,7 @@ export const BACKGROUND_GLSL = /* glsl */ `
 
 // The scene's background: its empty set, captured by the bridge from a few seconds of
 // frames (the per-pixel median, so people passing through drop out) and saved there.
-// Its depth replaces the live depth wherever nothing stands in front of it (see DepthFilter).
+// Its depth replaces the live depth wherever nothing stands in front of it (see Occluder).
 export class Background {
   readonly uniforms;
   private readonly params = { use: true, seconds: 5, captured: "none" };
@@ -76,10 +76,10 @@ export class Background {
     this.bridge = bridge;
     const ui = debug.folder("Background");
     if (!ui) return;
+    ui.addBinding(this.params, "use", { label: "use background" }).on("change", () => this.updateOn());
     ui.addBinding(this.params, "seconds", { label: "capture (s)", min: 1, max: 15, step: 1 });
     ui.addButton({ title: "Capture background" }).on("click", () => this.capture());
     ui.addBinding(this.params, "captured", { readonly: true });
-    ui.addBinding(this.params, "use", { label: "use background" }).on("change", () => this.updateOn());
     ui.addBinding(this.uniforms.uFgMin, "value", { label: "fg margin (m)", min: 0, max: 1 });
     ui.addBinding(this.uniforms.uFgRatio, "value", { label: "fg margin (%)", min: 0, max: 0.2 });
     ui.addBinding(this.uniforms.uColorTest, "value", { label: "color test" });
