@@ -290,6 +290,14 @@ Before the event:
 
 Tried, and removed because their gain didn't justify their complexity. They're in the git history, to come back to.
 
+- **Jagged occlusion edges** (open issue, not started): edges are still jagged with the _Smooth_ edge shape. Two causes:
+  where a plane meets a wall at nearly the same depth, stereo noise makes the intersection line wobble; and close
+  objects show the depth's pixels (about 3 screen pixels each at 640×360). Options, most promising first: draw the
+  static set (walls, furniture) as clean invisible occluder geometry (walls detected with `find_plane_at_hit`, a
+  spatial-mapping mesh, or hand-placed boxes), keep RVM for people, then upsample the remaining depth edges guided by
+  the color image (joint bilateral upsampling or a guided filter); temporal smoothing and 1280×720 / NEURAL_PLUS depth
+  help too.
+
 - **Background stage** (last in commit `f787fb8`): the bridge captured the empty set (the per-pixel median of a few
   seconds of depth and color, saved in `backgrounds/<scene>.npz`), and the page used its clean depth wherever nothing
   stood clearly in front of it, or clearly behind it (something that left). An optional color test told shadows from
