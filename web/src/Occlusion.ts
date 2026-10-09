@@ -8,15 +8,21 @@ import type { People } from "./People";
 // real depth at its pixel is hidden, unless that real point lies on the ground (see Ground.ts).
 // The real depth comes from the Occluder.
 //
-// Edges: the test runs against the 4 nearest depth pixels, and their answers are blended
-// by distance (like percentage-closer filtering for shadow maps). The fragment fades by that
-// coverage instead of being cut per depth pixel, so the stair-steps of the low-resolution
-// depth become smooth slopes, with each depth pixel's decision unchanged. The edge width sets
-// how many depth pixels the fade spans: below 1 the blend is sharpened (0 = hard edges), above
-// 1 it's averaged over 4 positions around the fragment, which widens it without moving it.
+// Edges: the depth is lower resolution than the screen, so testing only the nearest depth pixel
+// cuts along its pixels (stair-steps). Instead, the test's answers (1 = hidden, 0 = not) at the
+// depth pixels around the fragment are blended into a smooth field, and the fragment is hidden
+// where that field is above one half: the outline follows the field's half-way line, a smooth
+// curve through the stair-steps (like rendering crisp text from a low-resolution distance field).
+// The cut is antialiased over `edge softness` screen pixels, so it stays crisp.
+// - Pixels: the nearest depth pixel only (the stair-steps).
+// - Linear: the 4 nearest, blended by distance (chamfered corners).
+// - Smooth: the 16 nearest, with cubic B-spline weights (smooth curves; very thin parts and
+//   sharp corners get slightly rounder).
 //
 // People occlude with their own depth (the Occluder's B), and with the matte's alpha as
 // coverage, read at full resolution: their edges are as soft as the matte's.
+const EDGE_SHAPES = { Pixels: 0, Linear: 1, Smooth: 2 };
+
 export class Occlusion {
   private readonly uniforms;
 
@@ -27,7 +33,8 @@ export class Occlusion {
       uResolution: { value: new THREE.Vector2() },
       uBias: { value: 0.3 },
       uOcclusion: { value: true },
-      uEdgeWidth: { value: 3.5 }, // depth pixels the edges' fade spans, 0 = hard edges
+      uEdgeShape: { value: EDGE_SHAPES.Smooth },
+      uEdgeSoftness: { value: 1 }, // screen pixels the edges are antialiased over, 0 = aliased
       ...ground.uniforms,
       uMatte: people.uniforms.uMatte,
       uMatteOn: people.uniforms.uMatteOn,
@@ -44,8 +51,9 @@ export class Occlusion {
       min: 0,
       max: 0.5,
     });
-    ui.addBinding(this.uniforms.uEdgeWidth, "value", {
-      label: "edge width (px)",
+    ui.addBinding(this.uniforms.uEdgeShape, "value", { label: "edge shape", options: EDGE_SHAPES });
+    ui.addBinding(this.uniforms.uEdgeSoftness, "value", {
+      label: "edge softness (px)",
       min: 0,
       max: 4,
       step: 0.1,
@@ -70,7 +78,8 @@ export class Occlusion {
         uniform vec2 uResolution;
         uniform float uBias;
         uniform bool uOcclusion;
-        uniform float uEdgeWidth;
+        uniform int uEdgeShape; // EDGE_SHAPES
+        uniform float uEdgeSoftness;
         uniform vec4 uGround;
         uniform float uGroundMargin;
         uniform bool uGroundOn;
@@ -90,18 +99,33 @@ export class Occlusion {
           return onGround ? 0.0 : 1.0;
         }
 
-        // The share of this fragment hidden at 'position' (in occluder pixels): the test against
-        // the 4 nearest occluder pixels, blended by distance. 'sharpness' narrows the blend toward
-        // the middle of the step: 0 keeps it (one pixel wide), 1 makes it hard.
-        float coverageAt(vec2 position, vec3 viewPosition, float sharpness) {
+        // Cubic B-spline weights of the 4 pixels around a point 'f' (0..1) past the second one.
+        vec4 bspline(float f) {
+          float g = 1.0 - f;
+          return vec4(g * g * g, 3.0 * f * f * f - 6.0 * f * f + 4.0, 3.0 * g * g * g - 6.0 * g * g + 4.0, f * f * f) / 6.0;
+        }
+
+        // The test's answers around 'position' (in occluder pixels, pixel centers on whole
+        // numbers), blended into a smooth field (see EDGE_SHAPES): hidden where above 0.5.
+        float occlusionField(vec2 position, vec3 viewPosition) {
+          if (uEdgeShape == 0) return occludes(floor(position + 0.5), viewPosition);
           vec2 base = floor(position);
-          vec2 blend = position - base;
-          float half_ = 0.5 * (1.0 - sharpness);
-          blend = half_ > 0.001 ? smoothstep(0.5 - half_, 0.5 + half_, blend) : step(0.5, blend);
-          return mix(
-            mix(occludes(base, viewPosition), occludes(base + vec2(1.0, 0.0), viewPosition), blend.x),
-            mix(occludes(base + vec2(0.0, 1.0), viewPosition), occludes(base + vec2(1.0, 1.0), viewPosition), blend.x),
-            blend.y);
+          vec2 f = position - base;
+          if (uEdgeShape == 1) {
+            return mix(
+              mix(occludes(base, viewPosition), occludes(base + vec2(1.0, 0.0), viewPosition), f.x),
+              mix(occludes(base + vec2(0.0, 1.0), viewPosition), occludes(base + vec2(1.0, 1.0), viewPosition), f.x),
+              f.y);
+          }
+          vec4 wx = bspline(f.x);
+          vec4 wy = bspline(f.y);
+          float field = 0.0;
+          for (int y = 0; y < 4; y++) {
+            float row = 0.0;
+            for (int x = 0; x < 4; x++) row += wx[x] * occludes(base + vec2(x - 1, y - 1), viewPosition);
+            field += wy[y] * row;
+          }
+          return field;
         }
         ` +
         shader.fragmentShader
@@ -113,20 +137,11 @@ export class Occlusion {
               vec2 screenUv = gl_FragCoord.xy / uResolution;
               // This fragment's position among the occluder pixels.
               vec2 position = screenUv * uOccluderSize - 0.5;
-              float coverage;
-              if (uEdgeWidth <= 1.0) {
-                // Up to one pixel wide: the 4-pixel blend, sharpened (0 = hard edges).
-                coverage = coverageAt(position, vViewPosition, 1.0 - uEdgeWidth);
-              } else {
-                // Wider: the blend averaged over 4 positions around this one, which spreads the
-                // fade evenly on both sides of the edge without moving it.
-                float r = 0.5 * (uEdgeWidth - 1.0);
-                coverage = 0.25 * (
-                  coverageAt(position + vec2(-r, -r), vViewPosition, 0.0) +
-                  coverageAt(position + vec2(r, -r), vViewPosition, 0.0) +
-                  coverageAt(position + vec2(-r, r), vViewPosition, 0.0) +
-                  coverageAt(position + vec2(r, r), vViewPosition, 0.0));
-              }
+              float field = occlusionField(position, vViewPosition);
+              // Cut at one half, antialiased over 'uEdgeSoftness' screen pixels: fwidth is how
+              // much the field changes from one screen pixel to the next.
+              float halfWidth = 0.5 * uEdgeSoftness * fwidth(field);
+              float coverage = halfWidth > 0.0 ? smoothstep(0.5 - halfWidth, 0.5 + halfWidth, field) : step(0.5, field);
               // A person here, in front of this fragment: hidden by the matte's alpha.
               float personDepth = texture2D(uOccluder, screenUv).b;
               if (uMatteOn && personDepth > 0.0 && vViewPosition.z > personDepth + uBias)

@@ -12,7 +12,7 @@ flowchart LR
   bridge -- "WebSocket" --> people
   subgraph page["Page (web/): which real depth hides virtual content, per pixel"]
     people["1 · People<br/>matte shape, person depth"] --> ground["2 · Ground<br/>floor never occludes"]
-    ground --> test["3 · Occlusion test<br/>bias · edge width"]
+    ground --> test["3 · Occlusion test<br/>bias · edge shape"]
   end
   test --> out["Composite"]
 ```
@@ -65,12 +65,18 @@ turn stages off one by one to see what each contributes. The **Video › view** 
 ### 3 · Occlusion test
 
 - **How:** a virtual fragment is hidden where the real depth (from stages 1–2) is closer than it by more than the
-  **bias**. The test runs against the 4 nearest depth pixels and blends their answers by distance, so the stair-steps
-  of the low-resolution depth become smooth slopes, at the same place. **edge width (px)** sets how many depth pixels
-  that fade spans: 1 by default, narrower down to 0 (hard edges), wider up to 4 (averaged over 4 positions around each
-  fragment, so the edge stays in place). Transparent materials fade through their opacity;
-  opaque ones use alpha-to-coverage, with the renderer's antialiasing.
-- **Controls** (_Occlusion_): **occlusion** (on/off), **bias (m)**, **edge width (px)**.
+  **bias**. The depth is lower resolution than the screen, so cutting along its pixels gives stair-steps. Instead, the
+  test's answers (hidden or not) at the depth pixels around the fragment are blended into a smooth field, and the
+  fragment is hidden where it's above one half: the outline is a smooth curve through the stair-steps, still crisp.
+  - **edge shape**: _Smooth_ (default: the 16 nearest depth pixels, with cubic B-spline weights; very thin parts and
+    sharp corners get slightly rounder), _Linear_ (the 4 nearest: chamfered corners) or _Pixels_ (the nearest only:
+    the stair-steps).
+  - **edge softness (px)**: how many screen pixels the cut is antialiased over: 1 by default, 0 for aliased edges.
+  - A higher **ZED depth › resolution** (1280×720) halves the size of the steps, whatever the shape.
+
+  Transparent materials fade through their opacity; opaque ones use alpha-to-coverage, with the renderer's
+  antialiasing.
+- **Controls** (_Occlusion_): **occlusion** (on/off), **bias (m)**, **edge shape**, **edge softness (px)**.
 - **See it:** _Composite_ (the final render), and _Depth only_: the depth used, as a colormap (red is near, blue is
   far, dark purple is beyond the ZED's range of about 20 m, black is unknown). People are excluded from it.
 
