@@ -185,7 +185,7 @@ export class Detections {
   private readonly params = {
     boxes: "3d" as "none" | "3d" | "2d",
     masks: false,
-    enabled: true,
+    enabled: false,
     model: "MULTI_CLASS_BOX_FAST" as DetectionInfo["model"],
     confidence: 50,
     count: 0,

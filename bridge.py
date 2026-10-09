@@ -96,7 +96,7 @@ MATTE_JPEG_QUALITY = 90
 # from the next frame; changing the model or masks takes about a second (minutes the first time
 # a model is used: the SDK optimizes it for the GPU, then caches it).
 DETECTION_SETTINGS = dict(
-    enabled=True,
+    enabled=False,
     model="MULTI_CLASS_BOX_FAST",  # one of DETECTION_MODELS
     confidence=50,  # 1-99, objects detected with less are dropped
     masks=False,  # each object's mask (the SDK's segmentation), about 15 ms more per frame
