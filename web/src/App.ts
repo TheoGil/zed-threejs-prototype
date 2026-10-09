@@ -4,6 +4,7 @@ import { Debug } from "./Debug";
 import { DepthView } from "./DepthView";
 import { Detections } from "./Detections";
 import { Feed } from "./Feed";
+import { Ground } from "./Ground";
 import { Occluder } from "./Occluder";
 import { Occlusion } from "./Occlusion";
 import { People } from "./People";
@@ -22,6 +23,7 @@ export class App {
   private readonly debug = new Debug();
   private readonly status = new Status();
   private readonly feed = new Feed();
+  private readonly ground = new Ground();
   private readonly people = new People(this.feed);
   private readonly occluder = new Occluder(this.feed, this.people);
   private readonly detections = new Detections(this.camera);
@@ -40,7 +42,7 @@ export class App {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(canvas);
 
-    this.occlusion = new Occlusion(this.occluder, this.people);
+    this.occlusion = new Occlusion(this.occluder, this.ground, this.people);
     this.bridge = new Bridge(
       {
         onInfo: (info) => this.onInfo(info),
@@ -56,9 +58,18 @@ export class App {
       this.debug,
     );
     this.timestamps = new Timestamps(this.bridge, this.debug, defaultTimestamps);
-    this.depthView = new DepthView(this.occluder, this.people, this.detections, this.debug);
+    this.depthView = new DepthView(
+      this.occluder,
+      this.feed,
+      this.people,
+      this.detections,
+      this.camera,
+      this.ground,
+      this.debug,
+    );
     this.zedSettings = new ZedSettings(this.bridge, this.debug);
     this.occlusion.addControls(this.debug);
+    this.ground.addControls(this.debug);
     this.people.addControls(this.debug, this.bridge);
     this.detections.addControls(this.debug, this.bridge);
     this.planeTool = new PlaneTool(this.bridge, this.camera, this.feed, this.status, canvas, this.debug);
@@ -100,6 +111,7 @@ export class App {
   private render() {
     this.debug.begin();
     this.people.update();
+    this.ground.update(this.recordings.active?.groundPlane);
     this.occluder.render(this.renderer);
     this.detections.placeIn(this.recordings.scene);
     if (this.depthView.active) this.depthView.render(this.renderer);

@@ -9,7 +9,8 @@
       "height": 7.5434,
       "thickness": 0.02,
       "color": "#ef8f85",
-      "alpha": 0.75
+      "alpha": 0.75,
+      "ground": true
     }
   ],
   "ZED2_HD1080_Street_H264": [
@@ -22,7 +23,8 @@
       "height": 6.88033,
       "thickness": 0.09872826086956522,
       "color": "#ff1500",
-      "alpha": 0.8478260869565217
+      "alpha": 0.8478260869565217,
+      "ground": true
     }
   ]
 }

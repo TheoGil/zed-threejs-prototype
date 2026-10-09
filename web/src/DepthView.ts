@@ -1,17 +1,22 @@
 import * as THREE from "three";
 import type { Debug } from "./Debug";
 import type { Detections } from "./Detections";
+import type { Feed } from "./Feed";
+import type { Ground } from "./Ground";
 import type { Occluder } from "./Occluder";
 import type { People } from "./People";
+import type { ZedCamera } from "./ZedCamera";
 
 const DEPTH_VIEW_MAX = 20; // meters mapped to the far end of the colormap
 
-type View = "composite" | "depth" | "matte" | "objects";
-const VIEW_INDEX = { depth: 0, matte: 1, objects: 2 };
+type View = "composite" | "depth" | "ground" | "matte" | "objects";
+const VIEW_INDEX = { depth: 0, matte: 1, objects: 2, ground: 3 };
 
 // Full-screen debug views, instead of the composite.
 // - "Depth only": the depth occlusion uses (the Occluder's output) as a colormap (red is near,
 //   blue is far, black has no depth).
+// - "Ground": the video, tinted green where the real point is within the ground margin
+//   (it never occludes), darkened where there's no depth.
 // - "Robust Video Matting": the matte the bridge sends (white = person), whether the page uses it or
 //   not. Black when matting is off or unavailable.
 // - "Object Detection": all the objects' masks from the ZED SDK (white = an object), to compare
@@ -24,8 +29,11 @@ export class DepthView {
 
   constructor(
     occluder: Occluder,
+    feed: Feed,
     people: People,
     detections: Detections,
+    zedCamera: ZedCamera,
+    ground: Ground,
     debug: Debug,
   ) {
     const quad = new THREE.Mesh(
@@ -38,6 +46,10 @@ export class DepthView {
           uOccluder: occluder.output,
           uView: this.uView,
           uMax: { value: DEPTH_VIEW_MAX },
+          uVideo: { value: feed.video },
+          ...ground.uniforms,
+          // The same object setIntrinsics() updates, so this follows the calibration.
+          uProjectionInverse: { value: zedCamera.projectionMatrixInverse },
         },
         vertexShader: `
           varying vec2 vUv;
@@ -50,6 +62,11 @@ export class DepthView {
           uniform bool uHasMatte;
           uniform int uView; // VIEW_INDEX
           uniform float uMax;
+          uniform sampler2D uVideo;
+          uniform vec4 uGround;
+          uniform float uGroundMargin;
+          uniform bool uGroundOn;
+          uniform mat4 uProjectionInverse;
           varying vec2 vUv;
           // Polynomial approximation of the Turbo colormap (near = red, far = blue).
           vec3 turbo(float x) {
@@ -75,6 +92,20 @@ export class DepthView {
               return;
             }
             float d = texture2D(uOccluder, vUv).r;
+            if (uView == 3) {
+              vec3 color = texture2D(uVideo, vUv).rgb; // linear: the texture is sRGB
+              if (d <= 0.0) {
+                color *= 0.2;
+              } else if (uGroundOn) {
+                // The real point at this pixel: along its camera ray, d meters away.
+                vec4 p = uProjectionInverse * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
+                vec3 ray = p.xyz / p.w;
+                vec3 point = ray * (d / -ray.z);
+                if (dot(uGround.xyz, point) + uGround.w < uGroundMargin) color = mix(color, vec3(0.0, 1.0, 0.0), 0.5);
+              }
+              gl_FragColor = linearToOutputTexel(vec4(color, 1.0));
+              return;
+            }
             gl_FragColor = d > 0.0 ? vec4(turbo(1.0 - clamp(d / uMax, 0.0, 1.0)), 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
           }`,
       }),
@@ -86,6 +117,7 @@ export class DepthView {
       options: {
         Composite: "composite",
         "Depth only": "depth",
+        Ground: "ground",
         "Robust Video Matting": "matte",
         "Object Detection": "objects",
       },

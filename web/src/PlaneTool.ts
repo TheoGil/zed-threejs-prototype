@@ -53,7 +53,7 @@ function fitFloor({ normal, center, bounds }: FloorPlane): PlaneShape {
 
 // Places planes by clicking 4 corners of a rectangle on the video. Each click is lifted
 // to 3D using the real depth at that pixel. "Detect ground plane" adds one around the floor
-// the ZED SDK finds instead. Also handles the keyboard shortcuts:
+// the ZED SDK finds instead, and makes it the recording's ground (see Ground.ts). Also handles the keyboard shortcuts:
 // Esc cancels the corners, W / E switch the edited plane's gizmo to move / rotate.
 export class PlaneTool {
   private readonly params = { placePlanes: false };
@@ -104,8 +104,8 @@ export class PlaneTool {
       this.status.set(`no floor found: ${error ?? "no outline"}`);
       return;
     }
-    this.recording?.addPlane(fitFloor(plane));
-    this.status.set("floor plane added");
+    this.recording?.addPlane(fitFloor(plane), {}, true, true);
+    this.status.set("floor plane added, as the ground");
   }
 
   private clearCorners() {
