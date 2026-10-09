@@ -91,7 +91,8 @@ shows the same frame again with it, so you can compare settings while paused. Th
 - Changing **mode** or **stabilization** reopens the recording, which takes a second or two, at the same frame.
 - **confidence** (1–100): lower removes more uncertain pixels, mostly along object edges.
 - **texture conf.** (1–100): lower removes more pixels in plain, textureless areas.
-- **fill holes**: gives every pixel a depth (no black in _Depth only_), with guessed values in the holes.
+- **fill holes** (on by default): gives every pixel a depth (no black in _Depth only_), with guessed values in the
+  holes.
 - **drop saturated**: removes pixels in over-exposed areas.
 - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
 - **camera resolution** and **camera fps** (live camera only, hidden for recordings): what the ZED captures, from VGA

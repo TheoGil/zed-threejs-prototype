@@ -68,7 +68,7 @@ DEPTH_SETTINGS = dict(
     stabilization=30,  # 0-100, smooths depth over time where the scene is static
     confidence=95,  # 1-100, lower drops more uncertain pixels (mostly along edges)
     textureConfidence=100,  # 1-100, lower drops more pixels in plain, textureless areas
-    fill=False,  # fill every hole: no invalid pixels, but guessed depth there
+    fill=True,  # fill every hole: no invalid pixels, but guessed depth there
     removeSaturated=True,  # drop pixels in over-exposed areas
     resolution="640x360",  # depth map size sent to the page, one of DEPTH_RESOLUTIONS
     # Live camera only: what it captures (the video sent is always IMG_W x IMG_H). Depth is
