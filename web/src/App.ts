@@ -50,6 +50,7 @@ export class App {
           this.detections.setMasks(frame.objectMasks);
         },
         onPause: (position) => this.timestamps.log(position),
+        onFloor: (plane, error) => this.planeTool.addFloor(plane, error),
       },
       this.status,
       this.debug,
@@ -60,7 +61,7 @@ export class App {
     this.occlusion.addControls(this.debug);
     this.people.addControls(this.debug, this.bridge);
     this.detections.addControls(this.debug, this.bridge);
-    this.planeTool = new PlaneTool(this.camera, this.feed, this.status, canvas, this.debug);
+    this.planeTool = new PlaneTool(this.bridge, this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
       this.feed,

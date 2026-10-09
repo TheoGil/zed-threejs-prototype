@@ -40,10 +40,25 @@ export interface Frame {
   objectMasks: HTMLImageElement | null;
 }
 
+// The floor the ZED SDK found, after a floor request (ZedSource.find_floor() in bridge.py), in
+// meters in the camera's frame (the scene's).
+export interface FloorPlane {
+  normal: number[]; // unit, facing the camera
+  center: number[];
+  bounds: number[][]; // the outline of the floor seen
+}
+
+interface FloorMessage {
+  type: "floor";
+  plane: FloorPlane | null;
+  error: string | null; // why no floor was found
+}
+
 interface Handlers {
   onInfo: (info: StreamInfo) => void;
   onFrame: (frame: Frame) => void;
   onPause: (position: number | null) => void; // the Pause button, with the frame shown
+  onFloor: (plane: FloorPlane | null, error: string | null) => void; // the reply to a floor request
 }
 
 // Binary message kinds: the first byte of their header. Flags: the second byte. Then the frame's
@@ -134,7 +149,11 @@ export class Bridge {
       this.sendControl(); // the page is the source of truth for play/pause and speed
     };
     socket.onmessage = (e) => {
-      if (typeof e.data === "string") this.onInfo(JSON.parse(e.data));
+      if (typeof e.data === "string") {
+        const message: StreamInfo | FloorMessage = JSON.parse(e.data);
+        if ("type" in message) this.handlers.onFloor(message.plane, message.error);
+        else this.onInfo(message);
+      }
       else if (this.info) this.onBinary(e.data);
     };
     socket.onclose = () => {

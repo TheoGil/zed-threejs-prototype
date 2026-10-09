@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { Bridge, FloorPlane } from "./Bridge";
 import type { Debug } from "./Debug";
 import type { Feed } from "./Feed";
 import type { PlaneShape } from "./Plane";
@@ -27,8 +28,32 @@ function fitRectangle([a, b, c, d]: THREE.Vector3[]): PlaneShape {
   return { center, quaternion, width, height };
 }
 
+// The rectangle around the floor the ZED SDK found: on its plane, its sides along the camera's
+// left-right and depth directions, covering the floor seen.
+function fitFloor({ normal, center, bounds }: FloorPlane): PlaneShape {
+  const zAxis = new THREE.Vector3().fromArray(normal);
+  const xAxis = new THREE.Vector3(1, 0, 0).addScaledVector(zAxis, -zAxis.x).normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis);
+  const origin = new THREE.Vector3().fromArray(center);
+  const min = new THREE.Vector2(Infinity, Infinity);
+  const max = new THREE.Vector2(-Infinity, -Infinity);
+  for (const point of bounds) {
+    const offset = new THREE.Vector3().fromArray(point).sub(origin);
+    const p = new THREE.Vector2(offset.dot(xAxis), offset.dot(yAxis));
+    min.min(p);
+    max.max(p);
+  }
+  return {
+    center: origin.addScaledVector(xAxis, (min.x + max.x) / 2).addScaledVector(yAxis, (min.y + max.y) / 2),
+    quaternion: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis)),
+    width: max.x - min.x,
+    height: max.y - min.y,
+  };
+}
+
 // Places planes by clicking 4 corners of a rectangle on the video. Each click is lifted
-// to 3D using the real depth at that pixel. Also handles the keyboard shortcuts:
+// to 3D using the real depth at that pixel. "Detect ground plane" adds one around the floor
+// the ZED SDK finds instead. Also handles the keyboard shortcuts:
 // Esc cancels the corners, W / E switch the edited plane's gizmo to move / rotate.
 export class PlaneTool {
   private readonly params = { placePlanes: false };
@@ -43,6 +68,7 @@ export class PlaneTool {
   private recording: Recording | null = null;
 
   constructor(
+    private readonly bridge: Bridge,
     private readonly camera: ZedCamera,
     private readonly feed: Feed,
     private readonly status: Status,
@@ -52,6 +78,9 @@ export class PlaneTool {
     const ui = debug.folder("Planes");
     if (ui) {
       ui.addBinding(this.params, "placePlanes", { label: "click to place" });
+      ui.addButton({ title: "Detect ground plane" }).on("click", () => {
+        if (this.bridge.send({ type: "floor" })) this.status.set("detecting the floor…");
+      });
       ui.addButton({ title: "Clear planes" }).on("click", () => {
         this.recording?.clear();
         this.clearCorners();
@@ -67,6 +96,16 @@ export class PlaneTool {
     this.clearCorners();
     this.recording = recording;
     recording.scene.add(this.markers);
+  }
+
+  // Call with the bridge's reply to "Detect ground plane".
+  addFloor(plane: FloorPlane | null, error: string | null) {
+    if (!plane || plane.bounds.length < 3) {
+      this.status.set(`no floor found: ${error ?? "no outline"}`);
+      return;
+    }
+    this.recording?.addPlane(fitFloor(plane));
+    this.status.set("floor plane added");
   }
 
   private clearCorners() {

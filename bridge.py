@@ -27,6 +27,8 @@ Protocol (ws://localhost:8765):
          if flags & HAS_MATTE: [matte length: uint32 little-endian]
                                [people's alpha matte: grayscale JPEG, video size, 255 = person]
          [color: JPEG bytes, until end of message]
+  3. After a floor request, one JSON text message: {"type": "floor", "plane": {...} or null,
+     "error": str or null}, the plane as ZedSource.find_floor() returns it.
   Browser -> bridge:
      {"type": "control", "playing": bool, "speed": float}
        (speed only applies to SVO sources; a live camera runs at its own rate)
@@ -35,6 +37,7 @@ Protocol (ws://localhost:8765):
      {"type": "depth", "settings": {...}}   any subset of DEPTH_SETTINGS
      {"type": "matting", "settings": {...}}  any subset of MATTING_SETTINGS
      {"type": "detection", "settings": {...}}  any subset of DETECTION_SETTINGS
+     {"type": "floor"}                      detect the floor plane in the current frame
 """
 
 import asyncio
@@ -102,6 +105,9 @@ DETECTION_MODELS = [
     "MULTI_CLASS_BOX_FAST", "MULTI_CLASS_BOX_MEDIUM", "MULTI_CLASS_BOX_ACCURATE",  # people, vehicles, bags...
     "PERSON_HEAD_BOX_FAST", "PERSON_HEAD_BOX_ACCURATE",  # heads only, for crowds
 ]
+
+# Floor detection: it needs positional tracking ready, which can take a few frames (live).
+FLOOR_ATTEMPTS = 30
 
 # Binary message kinds (the first byte of the 2-byte header), and flags (the second).
 FRAME = 0
@@ -284,12 +290,9 @@ class ZedSource:
             return None
         model, masks = detection
         # Tracking objects across frames (stable ids, velocity) needs positional tracking.
-        if not self.cam.is_positional_tracking_enabled():
-            tracking = sl.PositionalTrackingParameters()
-            tracking.set_as_static = True  # the camera doesn't move
-            err = self.cam.enable_positional_tracking(tracking)
-            if err != sl.ERROR_CODE.SUCCESS:
-                return f"positional tracking: {err}"
+        error = self.enable_tracking()
+        if error:
+            return error
         params = sl.ObjectDetectionParameters()
         params.detection_model = getattr(sl.OBJECT_DETECTION_MODEL, model)
         params.enable_tracking = True
@@ -299,6 +302,35 @@ class ZedSource:
             return str(err)
         self.detection = detection
         return None
+
+    def enable_tracking(self):
+        """Positional tracking, which object tracking and floor detection need.
+        Returns None, or why it couldn't start."""
+        sl = self.sl
+        if self.cam.is_positional_tracking_enabled():
+            return None
+        tracking = sl.PositionalTrackingParameters()
+        tracking.set_as_static = True  # the camera doesn't move
+        err = self.cam.enable_positional_tracking(tracking)
+        return None if err == sl.ERROR_CODE.SUCCESS else f"positional tracking: {err}"
+
+    def find_floor(self):
+        """(plane, None) for the floor seen in the frame last grabbed, or (None, why not).
+        plane: normal (unit, facing the camera), center, and bounds (the outline of the floor
+        seen, a list of points), in meters in the camera's frame: like everything the SDK
+        measures here, as runtime.measure3D_reference_frame is CAMERA."""
+        sl = self.sl
+        error = self.enable_tracking()
+        if error:
+            return None, error
+        plane = sl.Plane()
+        err = self.cam.find_floor_plane(plane, sl.Transform())
+        if err != sl.ERROR_CODE.SUCCESS:
+            return None, str(err)
+        normal, center = plane.get_normal(), plane.get_center()
+        if np.dot(normal, center) > 0:  # face the camera, at the origin
+            normal = -normal
+        return dict(normal=json_values(normal), center=json_values(center), bounds=json_values(plane.get_bounds())), None
 
     def detect(self):
         """(objects, masks) for the frame last grabbed. objects: the objects detected (see
@@ -412,9 +444,11 @@ async def main():
     requested_depth = None
     requested_detection = None
     requested_seek = None  # SVO frame
+    requested_floor = False
 
     async def handler(ws):
-        nonlocal requested_scene, requested_depth, requested_detection, requested_seek, matting_settings, info
+        nonlocal requested_scene, requested_depth, requested_detection, requested_seek, requested_floor
+        nonlocal matting_settings, info
         # Queued without waiting, like the frames: awaiting a send waits for the connection to
         # drain, which the frames broadcast meanwhile can keep from ever happening, and then this
         # handler would never read the page's messages. The page gets the info before any frame.
@@ -430,6 +464,8 @@ async def main():
                     requested_scene = msg["name"]
                 elif msg.get("type") == "seek":
                     requested_seek = int(msg.get("position", 0))
+                elif msg.get("type") == "floor":
+                    requested_floor = True
                 elif msg.get("type") == "depth":
                     requested_depth = update_depth_settings(
                         requested_depth or depth_settings, msg.get("settings", {})
@@ -514,6 +550,23 @@ async def main():
                 if matting:
                     matting.reset()  # its memory of past frames is from elsewhere in the video
                 send_frame(source.grab())  # the frame sought, even when paused
+                next_frame = time.perf_counter()
+                await asyncio.sleep(0)
+
+            if requested_floor:
+                requested_floor = False
+                plane, error = source.find_floor()
+                frame = None
+                # Tracking may not be ready yet: try on the next frames (the same one when paused).
+                for _ in range(FLOOR_ATTEMPTS):
+                    if plane:
+                        break
+                    frame = source.regrab() if not playback["playing"] else source.grab()
+                    plane, error = source.find_floor()
+                print("Floor plane found." if plane else f"Floor plane not found: {error}")
+                websockets.broadcast(clients, json.dumps(dict(type="floor", plane=plane, error=error)))
+                if frame:
+                    send_frame(frame)
                 next_frame = time.perf_counter()
                 await asyncio.sleep(0)
 

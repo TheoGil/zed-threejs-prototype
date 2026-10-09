@@ -220,6 +220,12 @@ is a true rectangle fitted to the 4 points: its center is their average, its sid
 its width and height are the averages of the opposite edges. Press `Esc` to cancel the current corners.
 Clicks where the ZED has no depth (sky, reflections, very close or far) are ignored.
 
+**Detect ground plane** (in _Planes_) adds a plane on the floor instead: the bridge asks the ZED SDK to find the floor
+in the current frame (`find_floor_plane`), and the page fits a rectangle around the floor it saw, its sides along the
+camera's left-right and depth directions. It's a regular plane: edit it with the gizmo, and copy its definition from
+the console into `default-planes.json` to keep it. The floor must be visible; if none is found, the status line says
+why. On the runners recording it's about 5 × 15 m, within about 2° and 8 cm of the plane placed by hand.
+
 ## Coordinates
 
 Everything is in the ZED left camera's frame: meters, right-handed, Y up, looking down **-Z**
