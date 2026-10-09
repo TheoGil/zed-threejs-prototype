@@ -10,6 +10,7 @@ import { Occlusion } from "./Occlusion";
 import { People } from "./People";
 import { PlaneTool } from "./PlaneTool";
 import { Recordings, type DefaultPlanes } from "./Recordings";
+import { Sensor, type DefaultSensors } from "./Sensor";
 import { Status } from "./Status";
 import { Timestamps, type DefaultTimestamps } from "./Timestamps";
 import { ZedCamera } from "./ZedCamera";
@@ -34,10 +35,11 @@ export class App {
   private readonly planeTool: PlaneTool;
   private readonly recordings: Recordings;
   private readonly timestamps: Timestamps;
+  private readonly sensor: Sensor;
 
   // The order of the addControls() calls sets the order of the folders in the debug pane:
   // the inputs (video, ZED depth), the occlusion test, people, then the objects detected.
-  constructor(defaultPlanes: DefaultPlanes, defaultTimestamps: DefaultTimestamps) {
+  constructor(defaultPlanes: DefaultPlanes, defaultTimestamps: DefaultTimestamps, defaultSensors: DefaultSensors) {
     const canvas = this.renderer.domElement;
     this.renderer.setPixelRatio(window.devicePixelRatio);
     document.body.appendChild(canvas);
@@ -72,6 +74,7 @@ export class App {
     this.ground.addControls(this.debug);
     this.people.addControls(this.debug, this.bridge);
     this.detections.addControls(this.debug, this.bridge);
+    this.sensor = new Sensor(this.camera, canvas, this.occlusion, this.debug, defaultSensors);
     this.planeTool = new PlaneTool(this.bridge, this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -93,6 +96,7 @@ export class App {
     this.occluder.setSize(info.depthWidth, info.depthHeight);
     this.resize();
     this.timestamps.sync(info.scene, info.fps);
+    this.sensor.setRecording(info.scene);
     this.zedSettings.sync(info.depth, info.live);
     this.people.sync(info.matting);
     this.detections.sync(info.detection);
@@ -114,6 +118,7 @@ export class App {
     this.ground.update(this.recordings.active?.groundPlane);
     this.occluder.render(this.renderer);
     this.detections.placeIn(this.recordings.scene);
+    this.sensor.placeIn(this.recordings.scene);
     if (this.depthView.active) this.depthView.render(this.renderer);
     else this.renderer.render(this.recordings.scene, this.camera);
     this.debug.end();

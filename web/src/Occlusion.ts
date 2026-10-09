@@ -72,6 +72,17 @@ export class Occlusion {
     if (!material.transparent) material.alphaToCoverage = true;
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, this.uniforms);
+      // The lit materials have the fragment's view-space position; the others (basic meshes,
+      // lines, points) get it here.
+      if (!shader.vertexShader.includes("vViewPosition")) {
+        shader.vertexShader =
+          "varying vec3 vViewPosition;\n" +
+          shader.vertexShader.replace(
+            "#include <project_vertex>",
+            "#include <project_vertex>\n  vViewPosition = - mvPosition.xyz;",
+          );
+        shader.fragmentShader = "varying vec3 vViewPosition;\n" + shader.fragmentShader;
+      }
       shader.fragmentShader =
         `uniform sampler2D uOccluder;
         uniform vec2 uOccluderSize;

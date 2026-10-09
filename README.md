@@ -142,7 +142,8 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Occluder.ts`: stage 1 on the GPU, at depth resolution. Its output texture is the depth that `Occlusion`
     and the debug views use.
   - `Ground.ts`: stage 2. The active recording's ground plane.
-  - `Occlusion.ts`: stage 3. `apply(material)` adds the occlusion test to any built-in material.
+  - `Occlusion.ts`: stage 3. `apply(material)` adds the occlusion test to any built-in material, lines and points
+    included.
   - `DepthView.ts`: the debug views (_Depth only_, _Ground_, _Robust Video Matting_, _Object Detection_).
   - `Detections.ts`: the objects the ZED SDK detects, drawn as 3D boxes, and the _Object Detection_ controls.
   - `ZedCamera.ts`: a three.js camera whose projection is built from the ZED intrinsics.
@@ -152,8 +153,10 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Debug.ts`: the Tweakpane pane and the Stats panel. Set `SHOW_DEBUG` to `false` to hide all controls.
   - `Status.ts`: the status line at the bottom-left.
   - `Timestamps.ts`: the timestamp buttons under Play, and logging the frame paused on.
+  - `Sensor.ts`: the stand-in sensor and its laser curtain, and the _Sensor_ controls.
 - `web/public/default-planes.json`: the planes created on load, per recording (see Planes below).
 - `web/public/timestamps.json`: the timestamps listed under Play, per recording, as SVO frame numbers.
+- `web/public/sensors.json`: the sensor's placement and settings, per recording.
 - `vite.config.ts`: Vite serves `web/` on port 8000. `yarn typecheck` runs the TypeScript checker.
 
 ## Setup (once)
@@ -220,6 +223,16 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
   - **Timestamps**: frames of a recording to come back to, listed as buttons under Play (`1:08.4 · frame 1026`).
     Clicking one pauses on that frame. Pausing logs the frame shown to the browser console: add its number under its
     recording in `web/public/timestamps.json`, then reload the page, to list it.
+- **Sensor**: a stand-in for the real sensor, to judge occlusion and try calibrating its placement from the camera. A
+  box (**width**, **height**, **depth**: 1 m × 10 cm × 10 cm by default) with a curtain of evenly spaced lasers out of
+  its bottom face, across its whole width (**lasers**: how many, **laser length**: 5 m, **laser color**), like a door
+  sensor above a doorway. Both go through the occlusion test, so a person walking through the curtain cuts the lasers.
+  - Place it to line up with the real sensor in the video: **edit** shows a gizmo (**mode**: _Move_ or _Rotate_, along
+    the sensor's own axes), or type exact values in **position (m)** and **rotation (°)** (in the camera's frame).
+  - Every change logs the sensor's definition to the browser console, labelled with its recording: paste it into
+    `web/public/sensors.json` under that recording's name (`{ "<recording>": { ... } }`) to keep it. Without one, a
+    recording's sensor starts 3 m in front of the camera, half a meter above it. Changes are kept per recording until
+    the page reloads.
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
   here; only the current recording's scene is rendered and only its folder is shown.
   Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
