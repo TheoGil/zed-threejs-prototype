@@ -59,7 +59,7 @@ export class Sensor {
   private readonly lasers: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   private readonly control: TransformControls;
   private readonly params = {
-    show: true,
+    show: false,
     edit: false,
     mode: "translate" as Mode,
     rotation: { x: 0, y: 0, z: 0 }, // degrees, bound to the controls
@@ -103,7 +103,7 @@ export class Sensor {
 
     this.addControls(debug);
     this.apply(DEFAULT);
-    this.setEditing(false);
+    this.updateVisible(); // hidden until shown
   }
 
   // Call with each info from the bridge: the sensor follows the scene playing, and keeps this

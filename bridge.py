@@ -3,7 +3,7 @@
 Grabs the left color image + depth map from a ZED camera (or an .svo recording)
 and streams them to the browser. The page can switch between scenes.
 
-    python bridge.py                      # every .svo next to this script (live camera if none)
+    python bridge.py                      # every .svo / .svo2 next to this script (live camera if none)
     python bridge.py a.svo b.svo          # these recordings (wildcards like *.svo work)
     python bridge.py --live               # add the live camera to the scenes
 
@@ -55,7 +55,7 @@ from matting import Matting
 
 PORT = 8765
 # The scene opened first, when there (and without --live, which opens the live camera first).
-DEFAULT_SCENE = "ZED2_HD2K_Runners_H264"
+DEFAULT_SCENE = "HD720_SN30983530_09-54-01"
 LIVE_SCENE = "Live camera"  # the live camera's scene name
 IMG_W, IMG_H = 1280, 720
 JPEG_QUALITY = 85
@@ -396,7 +396,8 @@ def find_scenes(args):
     for arg in (a for a in args if not a.startswith("--")):
         paths += sorted(glob.glob(arg)) or [arg]  # PowerShell doesn't expand wildcards itself
     if not paths and "--live" not in args:
-        paths = sorted(str(p) for p in Path(__file__).parent.glob("*.svo"))
+        # .svo2: what recent ZED SDKs record.
+        paths = sorted(str(p) for pattern in ("*.svo", "*.svo2") for p in Path(__file__).parent.glob(pattern))
     scenes = {Path(p).stem: (lambda settings, p=p: ZedSource(p, settings)) for p in paths}
     if "--live" in args or not scenes:
         scenes = {LIVE_SCENE: lambda settings: ZedSource(None, settings), **scenes}

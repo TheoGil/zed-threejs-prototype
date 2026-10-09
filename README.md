@@ -201,12 +201,12 @@ same the first time each is used, which can take much longer (see Object Detecti
 ## Run
 
 ```
-.venv\Scripts\python bridge.py      # every .svo in this folder, switchable from the page
+.venv\Scripts\python bridge.py      # every .svo / .svo2 in this folder, switchable from the page
 yarn dev                            # Vite dev server for web/, reloads the page on edits
 ```
 
 Other ways to start the bridge: `bridge.py a.svo b.svo` (only these; wildcards like `*.svo` work),
-`--live` (adds the live camera). With no `.svo` in the folder, it opens the live camera.
+`--live` (adds the live camera). With no `.svo` or `.svo2` in the folder, it opens the live camera.
 
 Open http://localhost:8000. If the 3D content looks stretched or shifted, check
 that the browser runs on the NVIDIA GPU (Windows Graphics settings → High performance).
@@ -223,7 +223,8 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
   - **Timestamps**: frames of a recording to come back to, listed as buttons under Play (`1:08.4 · frame 1026`).
     Clicking one pauses on that frame. Pausing logs the frame shown to the browser console: add its number under its
     recording in `web/public/timestamps.json`, then reload the page, to list it.
-- **Sensor**: a stand-in for the real sensor, to judge occlusion and try calibrating its placement from the camera. A
+- **Sensor** (hidden until **show** is ticked): a stand-in for the real sensor, to judge occlusion and try calibrating
+  its placement from the camera. A
   box (**width**, **height**, **depth**: 1 m × 10 cm × 10 cm by default) with a curtain of evenly spaced lasers out of
   its bottom face, across its whole width (**lasers**: how many, **laser length**: 5 m, **laser color**), like a door
   sensor above a doorway. Both go through the occlusion test, so a person walking through the curtain cuts the lasers.
