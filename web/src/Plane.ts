@@ -28,6 +28,9 @@ export interface PlaneDefinition extends PlaneStyle {
 
 type Mode = "translate" | "rotate";
 
+// A quarter turn about X, which takes Y onto Z: in floorFrame(), onto the plane's normal.
+const Y_ALONG_NORMAL = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+
 export function shapeFromDefinition({ matrix, width, height }: PlaneDefinition): PlaneShape {
   const center = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
@@ -137,6 +140,13 @@ export class Plane {
 
   // Writes the plane's surface (its local z = 0 face) as (normal, w), in the camera frame:
   // the height of a point P above it is dot(normal, P) + w. The normal (+Z) faces the camera.
+  // Places `target` on the plane's surface (its local z = 0 face), at its center: target's Y
+  // along the plane's normal (up, from the floor), its X along the plane's X.
+  floorFrame(target: THREE.Object3D) {
+    target.position.copy(this.mesh.position);
+    target.quaternion.copy(this.mesh.quaternion).multiply(Y_ALONG_NORMAL);
+  }
+
   surface(target: THREE.Vector4) {
     const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
     target.set(normal.x, normal.y, normal.z, -normal.dot(this.mesh.position));

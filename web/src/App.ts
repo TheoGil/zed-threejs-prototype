@@ -11,6 +11,7 @@ import { People } from "./People";
 import { PlaneTool } from "./PlaneTool";
 import { Recordings, type DefaultPlanes } from "./Recordings";
 import { Sensor, type DefaultSensors } from "./Sensor";
+import { Spheres } from "./Spheres";
 import { Status } from "./Status";
 import { Timestamps, type DefaultTimestamps } from "./Timestamps";
 import { ZedCamera } from "./ZedCamera";
@@ -36,6 +37,7 @@ export class App {
   private readonly recordings: Recordings;
   private readonly timestamps: Timestamps;
   private readonly sensor: Sensor;
+  private readonly spheres: Spheres;
 
   // The order of the addControls() calls sets the order of the folders in the debug pane:
   // the inputs (video, ZED depth), the occlusion test, people, then the objects detected.
@@ -75,6 +77,7 @@ export class App {
     this.people.addControls(this.debug, this.bridge);
     this.detections.addControls(this.debug, this.bridge);
     this.sensor = new Sensor(this.camera, canvas, this.occlusion, this.debug, defaultSensors);
+    this.spheres = new Spheres(this.occlusion, this.debug);
     this.planeTool = new PlaneTool(this.bridge, this.camera, this.feed, this.status, canvas, this.debug);
     this.recordings = new Recordings(
       { camera: this.camera, canvas, occlusion: this.occlusion },
@@ -119,6 +122,8 @@ export class App {
     this.occluder.render(this.renderer);
     this.detections.placeIn(this.recordings.scene);
     this.sensor.placeIn(this.recordings.scene);
+    this.spheres.placeIn(this.recordings.scene);
+    this.spheres.update(performance.now() / 1000, this.recordings.active?.groundPlane);
     if (this.depthView.active) this.depthView.render(this.renderer);
     else this.renderer.render(this.recordings.scene, this.camera);
     this.debug.end();

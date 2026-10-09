@@ -154,6 +154,7 @@ The boxes are drawn over everything: they show what the bridge sees, and aren't 
   - `Status.ts`: the status line at the bottom-left.
   - `Timestamps.ts`: the timestamp buttons under Play, and logging the frame paused on.
   - `Sensor.ts`: the stand-in sensor and its laser curtain, and the _Sensor_ controls.
+  - `Spheres.ts`: the grid of bobbing spheres on the floor, and the _Spheres_ controls.
 - `web/public/default-planes.json`: the planes created on load, per recording (see Planes below).
 - `web/public/timestamps.json`: the timestamps listed under Play, per recording, as SVO frame numbers.
 - `web/public/sensors.json`: the sensor's placement and settings, per recording.
@@ -234,6 +235,11 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
     `web/public/sensors.json` under that recording's name (`{ "<recording>": { ... } }`) to keep it. Without one, a
     recording's sensor starts 3 m in front of the camera, half a meter above it. Changes are kept per recording until
     the page reloads.
+- **Spheres** (hidden until **show** is ticked): a test of occlusion against moving 3D content. A grid of spheres (**per side**: 10 × 10 by default,
+  **spacing**, **radius**) on the recording's ground plane, centered on it (**offset** moves it along the floor), at
+  **height** above the floor, bobbing along the floor's normal in waves: **pattern** _Ripple_ (rings spreading from the
+  middle) or _Wave_ (straight crests along X), **amplitude**, **wavelength**, **speed**. Without a ground plane, it
+  sits 4 m in front of the camera, 1.5 m below it. One instanced mesh, so it costs a single draw.
 - **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene`; only the current recording's
   scene is rendered, and only its planes are listed here, one section each, with color, alpha, thickness and Remove.
   Thickness grows from the surface toward the camera.
