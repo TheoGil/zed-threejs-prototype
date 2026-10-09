@@ -53,6 +53,7 @@ from matting import Matting
 PORT = 8765
 # The scene opened first, when there (and without --live, which opens the live camera first).
 DEFAULT_SCENE = "ZED2_HD2K_Runners_H264"
+LIVE_SCENE = "Live camera"  # the live camera's scene name
 IMG_W, IMG_H = 1280, 720
 JPEG_QUALITY = 85
 
@@ -67,8 +68,15 @@ DEPTH_SETTINGS = dict(
     fill=False,  # fill every hole: no invalid pixels, but guessed depth there
     removeSaturated=True,  # drop pixels in over-exposed areas
     resolution="640x360",  # depth map size sent to the page, one of DEPTH_RESOLUTIONS
+    # Live camera only: what it captures (the video sent is always IMG_W x IMG_H). Depth is
+    # computed at this resolution: higher is sharper, and slower.
+    cameraResolution="HD720",  # one of CAMERA_FPS
+    cameraFps=30,  # one of CAMERA_FPS[cameraResolution]
 )
 REOPEN_SETTINGS = {"mode", "stabilization"}
+LIVE_REOPEN_SETTINGS = {"cameraResolution", "cameraFps"}  # reopen a live camera only
+# The ZED 2i's capture resolutions and the frame rates each allows.
+CAMERA_FPS = {"HD2K": [15], "HD1080": [15, 30], "HD720": [15, 30, 60], "VGA": [15, 30, 60, 100]}
 DEPTH_MODES = ["NEURAL_LIGHT", "NEURAL", "NEURAL_PLUS"]  # fastest to sharpest
 DEPTH_RESOLUTIONS = {"640x360": (640, 360), "1280x720": (1280, 720)}
 
@@ -198,6 +206,13 @@ def update_depth_settings(settings, changes):
             settings[key] = value
         elif key == "resolution" and value in DEPTH_RESOLUTIONS:
             settings[key] = value
+        elif key == "cameraResolution" and value in CAMERA_FPS:
+            settings[key] = value
+        elif key == "cameraFps" and isinstance(value, int):
+            settings[key] = value
+    # A frame rate the resolution allows: the closest one.
+    allowed = CAMERA_FPS[settings["cameraResolution"]]
+    settings["cameraFps"] = min(allowed, key=lambda fps: abs(fps - settings["cameraFps"]))
     return settings
 
 
@@ -211,6 +226,9 @@ class ZedSource:
         if svo_path:
             init.set_from_svo_file(svo_path)
             init.svo_real_time_mode = False  # we pace playback ourselves, see main()
+        else:
+            init.camera_resolution = getattr(sl.RESOLUTION, depth_settings["cameraResolution"])
+            init.camera_fps = depth_settings["cameraFps"]
         init.depth_mode = getattr(sl.DEPTH_MODE, depth_settings["mode"])
         init.depth_stabilization = depth_settings["stabilization"]
         init.coordinate_units = sl.UNIT.METER
@@ -349,7 +367,7 @@ def find_scenes(args):
         paths = sorted(str(p) for p in Path(__file__).parent.glob("*.svo"))
     scenes = {Path(p).stem: (lambda settings, p=p: ZedSource(p, settings)) for p in paths}
     if "--live" in args or not scenes:
-        scenes = {"Live camera": lambda settings: ZedSource(None, settings), **scenes}
+        scenes = {LIVE_SCENE: lambda settings: ZedSource(None, settings), **scenes}
     return scenes
 
 
@@ -381,7 +399,7 @@ async def main():
         depth_w, depth_h = source.depth_size
         return json.dumps(dict(
             width=IMG_W, height=IMG_H, depthWidth=depth_w, depthHeight=depth_h, **source.intrinsics,
-            scenes=list(scenes), scene=scene, fps=source.fps, depth=depth_settings,
+            scenes=list(scenes), scene=scene, live=not source.svo, fps=source.fps, depth=depth_settings,
             matting=dict(available=matting is not None, **matting_settings),
             detection=dict(error=detection_error, **detection_settings),
         ))
@@ -465,9 +483,11 @@ async def main():
                 name = requested_scene or scene
                 settings = requested_depth or depth_settings
                 requested_scene = requested_depth = None
-                reopen = name != scene or any(settings[k] != depth_settings[k] for k in REOPEN_SETTINGS)
+                reopen_keys = REOPEN_SETTINGS | (set() if source.svo else LIVE_REOPEN_SETTINGS)
+                reopen = name != scene or any(settings[k] != depth_settings[k] for k in reopen_keys)
                 if reopen:
-                    print(f"Opening {name} ({settings['mode']}, stabilization {settings['stabilization']})...")
+                    camera = f", {settings['cameraResolution']} at {settings['cameraFps']} fps" if name == LIVE_SCENE else ""
+                    print(f"Opening {name} ({settings['mode']}, stabilization {settings['stabilization']}{camera})...")
                     # Same scene: come back to the same frame, to compare settings.
                     position = source.svo_position() if name == scene else None
                     source.close()

@@ -22,6 +22,7 @@ export interface StreamInfo {
   cy: number;
   scenes: string[]; // every scene the bridge can play
   scene: string; // the one playing
+  live: boolean; // it's the live camera
   fps: number | null; // its frame rate, null for a live camera
   depth: DepthSettings; // the ZED SDK settings the depth is computed with
   matting: MattingInfo; // people matting in the bridge

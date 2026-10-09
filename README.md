@@ -75,6 +75,10 @@ shows the same frame again with it, so you can compare settings while paused. Th
 - **fill holes**: gives every pixel a depth (no black in _Depth only_), with guessed values in the holes.
 - **drop saturated**: removes pixels in over-exposed areas.
 - **resolution** of the depth map sent to the page: 640×360 or 1280×720 (the video's resolution).
+- **camera resolution** and **camera fps** (live camera only, hidden for recordings): what the ZED captures, from VGA
+  (672×376, up to 100 fps) to HD2K (2208×1242, 15 fps only); the fps dropdown lists what the resolution allows. The
+  video sent is always 1280×720, but depth is computed at the capture resolution: higher is sharper, and slower.
+  Changing either reopens the camera, which takes a second or two. The default is HD720 at 30 fps.
 
 ### Object Detection (ZED SDK, not part of occlusion)
 

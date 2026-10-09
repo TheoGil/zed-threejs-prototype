@@ -81,7 +81,7 @@ export class App {
     this.occluder.setSize(info.depthWidth, info.depthHeight);
     this.resize();
     this.timestamps.sync(info.scene, info.fps);
-    this.zedSettings.sync(info.depth);
+    this.zedSettings.sync(info.depth, info.live);
     this.people.sync(info.matting);
     this.detections.sync(info.detection);
     this.planeTool.setRecording(this.recordings.activate(info.scene));
