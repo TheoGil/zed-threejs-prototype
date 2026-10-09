@@ -119,10 +119,6 @@ class Marker {
       // Without the 3D box, the label sits above the middle of the 2D box's top edge.
       if (!this.box3d.visible) this.label.position.lerpVectors(corners[0], corners[1], 0.5);
     }
-    // Fainter while the SDK only predicts where it is.
-    const opacity = object.tracking === "OK" ? 1 : 0.4;
-    this.material.opacity = opacity;
-    this.label.material.opacity = opacity;
   }
 
   dispose() {

@@ -80,7 +80,7 @@ shows the same frame again with it, so you can compare settings while paused. Th
 
 The bridge runs the ZED SDK's object detection on each frame and sends what it finds with that frame, so the objects
 always match the video and depth shown. The page draws each one as a 3D or 2D box with its label and tracking id (people in
-magenta, vehicles in cyan, anything else in yellow; fainter while the SDK has lost it and only predicts where it is).
+magenta, vehicles in cyan, anything else in yellow).
 The boxes are drawn over everything: they show what the bridge sees, and aren't part of the scene.
 
 - **Per object** (`DetectedObject` in `Detections.ts`): a tracking id (stable while the object stays in view), label
