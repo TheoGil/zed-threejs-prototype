@@ -96,7 +96,7 @@ export class Plane {
     });
     recording.scene.add(this.control.getHelper());
 
-    this.folder = recording.folder?.addFolder({ title, expanded: false }) ?? null;
+    this.folder = recording.folder?.addFolder({ title, hidden: !recording.active }) ?? null;
     if (this.folder) this.addControls(this.folder);
     this.setEditing(false);
   }
@@ -122,6 +122,11 @@ export class Plane {
     this.settings.mode = mode;
     this.control.setMode(mode);
     this.folder?.refresh();
+  }
+
+  // Shows or hides this plane's folder: only the active recording's planes are listed.
+  setShownInPane(shown: boolean) {
+    if (this.folder) this.folder.hidden = !shown;
   }
 
   // Use Recording.setGround() instead, which keeps a single ground plane.

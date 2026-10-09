@@ -29,12 +29,13 @@ export async function loadDefaultPlanes(): Promise<DefaultPlanes> {
   }
 }
 
-// One recording (or the live camera): its own THREE.Scene with lights and planes,
-// and its own folder under "Planes".
+// One recording (or the live camera): its own THREE.Scene with lights and planes. Its planes'
+// folders sit in "Planes", shown only while it's the active recording.
 export class Recording {
   readonly scene = new THREE.Scene();
   readonly planes: Plane[] = [];
-  readonly folder: FolderApi | null;
+  readonly folder: FolderApi | null; // "Planes", shared by every recording
+  active = false;
   private count = 0;
 
   constructor(
@@ -50,7 +51,7 @@ export class Recording {
     sun.position.set(1, 2, 1);
     this.scene.add(sun);
 
-    this.folder = debug.folder("Planes")?.addFolder({ title: name, hidden: true, expanded: false }) ?? null;
+    this.folder = debug.folder("Planes");
     definitions.forEach((definition) =>
       this.addPlane(shapeFromDefinition(definition), definition, false, definition.ground),
     );
@@ -98,12 +99,13 @@ export class Recording {
   setActive(active: boolean) {
     // Hide the gizmo so it doesn't catch clicks on the next recording.
     if (!active) this.editedPlane?.setEditing(false);
-    if (this.folder) this.folder.hidden = !active;
+    this.active = active;
+    this.planes.forEach((plane) => plane.setShownInPane(active));
   }
 }
 
 // One Recording per scene the bridge plays. Only the active one is rendered,
-// and only its folder is shown.
+// and only its planes' folders are shown.
 export class Recordings {
   active: Recording | null = null;
   private readonly all = new Map<string, Recording>();

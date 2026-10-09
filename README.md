@@ -234,9 +234,9 @@ The bridge prints the fps it actually sends every 5 s. At 1× it should match th
     `web/public/sensors.json` under that recording's name (`{ "<recording>": { ... } }`) to keep it. Without one, a
     recording's sensor starts 3 m in front of the camera, half a meter above it. Changes are kept per recording until
     the page reloads.
-- **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene` and its own folder
-  here; only the current recording's scene is rendered and only its folder is shown.
-  Inside it there's one section per plane, with color, alpha, thickness and Remove. Thickness grows from the surface toward the camera.
+- **Planes**: planes belong to a recording. Each recording has its own `THREE.Scene`; only the current recording's
+  scene is rendered, and only its planes are listed here, one section each, with color, alpha, thickness and Remove.
+  Thickness grows from the surface toward the camera.
   - Every change logs the plane's definition to the browser console, labelled with its recording. Paste it into
     `web/public/default-planes.json`, under that recording's name, to have the plane created on load. The Unity prototype
     (`../zed-unity-prototype`) reads the same file.
